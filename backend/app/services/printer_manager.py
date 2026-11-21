@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import re
+import threading
 import traceback
 from collections.abc import Callable
 
@@ -11,12 +12,45 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.models.printer import Printer
 from backend.app.services.bambu_mqtt import BambuMQTTClient, MQTTLogEntry, PrinterState, get_stage_name
 from backend.app.services.printer_providers.factory import create_printer_client, normalize_provider
+from backend.app.services.printer_providers.octoprint import OctoPrintAuthError
 
 logger = logging.getLogger(__name__)
+
+
+def reported_nozzle_temperatures(temperatures: dict[str, object]) -> tuple[tuple[int, object], ...]:
+    """Return direct nozzle readings in stable physical-nozzle order.
+
+    Provider state uses ``nozzle`` for the first toolhead and ``nozzle_N`` for
+    subsequent toolheads. Targets and heating flags deliberately do not match,
+    so callers can safely use this for live-change de-duplication, persistence,
+    safety checks, and metric labels.
+    """
+
+    nozzles: list[tuple[int, object]] = []
+    for key, value in temperatures.items():
+        if key == "nozzle":
+            nozzles.append((1, value))
+            continue
+        if key.startswith("nozzle_") and key[7:].isdigit():
+            nozzles.append((int(key[7:]), value))
+    return tuple(sorted(nozzles))
+
 
 # Replacing a client can synchronously wait for its network thread. Keep that
 # teardown bounded so a failed device connection cannot freeze the API loop.
 REPLACEMENT_DISCONNECT_TIMEOUT_SECONDS = 2.0
+
+# HTTP-polled providers (Moonraker, OctoPrint, PrusaLink, PrusaConnect, Elegoo
+# SDCP) have no push channel. Their status used to be fetched synchronously on
+# every get_status()/is_connected() call, which ran blocking HTTP requests on
+# the asyncio event loop and stalled the whole backend behind slow printers.
+# A background thread per printer now polls on a fixed cadence and the
+# status accessors only read the cached state.
+HTTP_POLL_INTERVAL_SECONDS: dict[str, float] = {"moonraker": 3.0, "prusaconnect": 10.0}
+DEFAULT_HTTP_POLL_INTERVAL_SECONDS = 5.0
+# Consecutive failed polls before a polled printer is reported offline, so a
+# single dropped request does not make the printer card flap.
+HTTP_POLL_FAILURES_BEFORE_OFFLINE = 2
 
 # Models that have a real chamber temperature sensor
 # Based on Home Assistant Bambu Lab integration
@@ -34,6 +68,7 @@ CHAMBER_TEMP_SUPPORTED_MODELS = frozenset(
         "H2D",
         "H2DPRO",
         "H2S",  # H2 series
+        "H3C",  # H3 series
         "CENTAURI CARBON",  # Elegoo SDCP / CC1
         "ELEGOO CENTAURI CARBON",
         "CENTAURI-CARBON",
@@ -49,6 +84,7 @@ CHAMBER_TEMP_SUPPORTED_MODELS = frozenset(
         "O1E",  # H2D Pro
         "O2D",  # H2D Pro (alternate code)
         "N7",  # P2S
+        "N10",  # H3C
     ]
 )
 
@@ -93,6 +129,29 @@ def supports_chamber_temp(model: str | None) -> bool:
     # Normalize model name (uppercase, strip whitespace)
     model_upper = model.strip().upper()
     return model_upper in CHAMBER_TEMP_SUPPORTED_MODELS
+
+
+def chamber_temp_available(model: str | None, state: object = None) -> bool:
+    """Return True when chamber temperatures should be exposed for a printer.
+
+    Bambu/Elegoo models are allow-listed by model. Providers that detect a real
+    chamber sensor themselves (e.g. Moonraker ``heater_generic chamber``) set
+    ``state.chamber_temp_supported``.
+    """
+    if supports_chamber_temp(model):
+        return True
+    return getattr(state, "chamber_temp_supported", False) is True
+
+
+def chamber_capabilities(state: object) -> dict[str, object]:
+    """Provider-detected chamber capability flags, safe for JSON serialization."""
+    light = getattr(state, "chamber_light_supported", None)
+    max_temp = getattr(state, "chamber_temp_max", None)
+    return {
+        "chamber_light_supported": light if isinstance(light, bool) else None,
+        "chamber_heater_supported": getattr(state, "chamber_heater_supported", False) is True,
+        "chamber_temp_max": float(max_temp) if isinstance(max_temp, (int, float)) else None,
+    }
 
 
 def has_stg_cur_idle_bug(model: str | None) -> bool:
@@ -171,11 +230,71 @@ class PrinterInfo:
         self.provider = normalize_provider(provider)
 
 
+class _StatusPoller:
+    """Poll an HTTP printer client's status from a daemon thread."""
+
+    def __init__(self, client, interval: float, name: str):
+        self.client = client
+        self.interval = interval
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, name=f"printer-poll-{name}", daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    @property
+    def stopped(self) -> bool:
+        return self._stop.is_set()
+
+    def _run(self) -> None:
+        failures = 0
+        while not self._stop.wait(self.interval):
+            try:
+                self.client.request_status_update()
+                failures = 0
+            except Exception as exc:  # noqa: BLE001 - a failing poll must never kill the poller
+                failures += 1
+                if self._stop.is_set():
+                    return
+                state = getattr(self.client, "state", None)
+                if failures >= HTTP_POLL_FAILURES_BEFORE_OFFLINE and state is not None and state.connected:
+                    logger.info("Printer status poll failed %s times, marking offline: %s", failures, exc)
+                    state.connected = False
+                    on_state_change = getattr(self.client, "on_state_change", None)
+                    if callable(on_state_change):
+                        try:
+                            on_state_change(state)
+                        except Exception:  # noqa: BLE001
+                            logger.debug("Offline state callback failed", exc_info=True)
+                continue
+            refresh = getattr(self.client, "refresh_background_caches", None)
+            if callable(refresh):
+                try:
+                    refresh()
+                except Exception:  # noqa: BLE001 - optional cache refresh must never kill the poller
+                    logger.debug("Background cache refresh failed", exc_info=True)
+
+
+async def run_client_call(client, method: Callable, *args, **kwargs):
+    """Run a printer client call without blocking the event loop.
+
+    Bambu clients only publish to MQTT and stay on the loop thread as before.
+    HTTP-backed providers block on network I/O, so they run in a worker thread.
+    """
+    if isinstance(client, BambuMQTTClient):
+        return method(*args, **kwargs)
+    return await asyncio.to_thread(method, *args, **kwargs)
+
+
 class PrinterManager:
     """Manager for multiple printer connections."""
 
     def __init__(self):
         self._clients: dict[int, BambuMQTTClient] = {}
+        self._pollers: dict[int, _StatusPoller] = {}
         self._models: dict[int, str | None] = {}  # Cache printer models for feature detection
         self._printer_info: dict[int, PrinterInfo] = {}  # Cache printer name/serial for callbacks
         self._on_print_start: Callable[[int, dict], None] | None = None
@@ -442,10 +561,26 @@ class PrinterManager:
                 on_print_running_observed=on_print_running_observed,
             )
 
-        client.connect()
+        if provider == "bambu":
+            client.connect()
+        else:
+            # HTTP providers block on network I/O (and may probe fallback URLs);
+            # keep that off the event loop.
+            await asyncio.to_thread(client.connect)
+        if printer_id in self._clients:
+            # A concurrent connect for the same printer finished first.
+            self.disconnect_printer(printer_id, timeout=REPLACEMENT_DISCONNECT_TIMEOUT_SECONDS)
         self._clients[printer_id] = client
         self._models[printer_id] = printer.model  # Cache model for feature detection
         self._printer_info[printer_id] = PrinterInfo(printer.name, printer.serial_number, provider)
+        if provider != "bambu" and callable(getattr(client, "request_status_update", None)):
+            poller = _StatusPoller(
+                client,
+                HTTP_POLL_INTERVAL_SECONDS.get(provider, DEFAULT_HTTP_POLL_INTERVAL_SECONDS),
+                f"{provider}-{printer_id}",
+            )
+            self._pollers[printer_id] = poller
+            poller.start()
 
         # Wait a moment for connection
         await asyncio.sleep(1)
@@ -453,6 +588,9 @@ class PrinterManager:
 
     def disconnect_printer(self, printer_id: int, timeout: float = 0):
         """Disconnect from a printer."""
+        poller = self._pollers.pop(printer_id, None)
+        if poller is not None:
+            poller.stop()
         if printer_id in self._clients:
             self._clients[printer_id].disconnect(timeout=timeout)
             del self._clients[printer_id]
@@ -468,8 +606,7 @@ class PrinterManager:
         """Get the current status of a printer (checks for stale connections)."""
         if printer_id in self._clients:
             client = self._clients[printer_id]
-            # Check staleness and update connected state if needed
-            client.check_staleness()
+            self._refresh_connected(printer_id, client)
             return client.state
         return None
 
@@ -480,9 +617,8 @@ class PrinterManager:
     def get_all_statuses(self) -> dict[int, PrinterState]:
         """Get status of all connected printers (checks for stale connections)."""
         result = {}
-        for printer_id, client in self._clients.items():
-            # Check staleness and update connected state if needed
-            client.check_staleness()
+        for printer_id, client in list(self._clients.items()):
+            self._refresh_connected(printer_id, client)
             result[printer_id] = client.state
         return result
 
@@ -490,9 +626,20 @@ class PrinterManager:
         """Check if a printer is connected (checks for stale connections)."""
         if printer_id in self._clients:
             client = self._clients[printer_id]
-            # Check staleness and update connected state if needed
-            return client.check_staleness()
+            return self._refresh_connected(printer_id, client)
         return False
+
+    def _refresh_connected(self, printer_id: int, client) -> bool:
+        """Return the client's connected flag, checking staleness where cheap.
+
+        Background-polled HTTP clients already keep their state fresh, so this
+        only reads the cache for them; calling ``check_staleness()`` would run a
+        full blocking HTTP status fetch on the caller's (usually the event
+        loop's) thread. Bambu's check_staleness only inspects timestamps.
+        """
+        if printer_id in self._pollers:
+            return bool(client.state.connected)
+        return client.check_staleness()
 
     def get_client(self, printer_id: int) -> BambuMQTTClient | None:
         """Get the MQTT client for a printer."""
@@ -592,10 +739,9 @@ class PrinterManager:
                 logger.warning("Printer %s disconnected during cooldown wait", printer_id)
                 return False
 
-            # Check nozzle temperature (and nozzle_2 for dual extruders)
-            nozzle_temp = state.temperatures.get("nozzle", 0)
-            nozzle_2_temp = state.temperatures.get("nozzle_2", 0)
-            max_temp = max(nozzle_temp, nozzle_2_temp)
+            # A printer is only safe after every reported toolhead is cool.
+            nozzle_temperatures = [float(value) for _index, value in reported_nozzle_temperatures(state.temperatures)]
+            max_temp = max(nozzle_temperatures, default=0)
 
             if max_temp <= target_temp:
                 logger.info("Printer %s cooled down to %s°C", printer_id, max_temp)
@@ -698,15 +844,24 @@ class PrinterManager:
             )()
             client = create_printer_client(probe_printer)
             detected_provider_options: dict[str, str] = {}
+            model_label = {
+                "prusalink": "PrusaLink",
+                "prusaconnect": "Prusa Connect Mobile",
+                "elegoo_sdcp": "Elegoo SDCP",
+                "octoprint": "OctoPrint",
+            }.get(provider_name, "Klipper/Moonraker")
             try:
                 if provider_name == "prusalink" and hasattr(client, "detect_api_auth_mode"):
                     detected_provider_options = await asyncio.to_thread(client.detect_api_auth_mode)
+                if provider_name == "octoprint":
+                    await asyncio.to_thread(client.verify_api_key)
                 await asyncio.to_thread(client.connect)
-                model_label = {
-                    "prusalink": "PrusaLink",
-                    "prusaconnect": "Prusa Connect Mobile",
-                    "elegoo_sdcp": "Elegoo SDCP",
-                }.get(provider_name, "Klipper/Moonraker")
+                detected_camera = None
+                if provider_name == "octoprint":
+                    try:
+                        detected_camera = await asyncio.to_thread(client.discover_webcam)
+                    except Exception as exc:  # noqa: BLE001 - camera detection must not block adding the printer
+                        logger.info("OctoPrint webcam detection failed: %s", type(exc).__name__)
                 result = {
                     "success": True,
                     "state": getattr(getattr(client, "state", None), "state", "connected"),
@@ -714,13 +869,21 @@ class PrinterManager:
                 }
                 if detected_provider_options:
                     result["provider_options"] = json.dumps(detected_provider_options, separators=(",", ":"))
+                if detected_camera:
+                    result["detected_camera"] = detected_camera
                 return result
+            except OctoPrintAuthError as exc:
+                return {
+                    "success": False,
+                    "state": None,
+                    "model": model_label,
+                    "error": type(exc).__name__,
+                    "error_code": (
+                        "octoprint_permissions_missing" if exc.missing_permissions else "octoprint_api_key_invalid"
+                    ),
+                    "missing_permissions": exc.missing_permissions,
+                }
             except Exception as exc:
-                model_label = {
-                    "prusalink": "PrusaLink",
-                    "prusaconnect": "Prusa Connect Mobile",
-                    "elegoo_sdcp": "Elegoo SDCP",
-                }.get(provider_name, "Klipper/Moonraker")
                 return {"success": False, "state": None, "model": model_label, "error": type(exc).__name__}
             finally:
                 disconnect = getattr(client, "disconnect", None)
@@ -853,6 +1016,24 @@ def resolve_plate_id(state) -> int | None:
     return parse_plate_id(state.gcode_file)
 
 
+def toolhead_motion(state) -> tuple[dict[str, float] | None, float | None]:
+    """Toolhead position and Z offset reported by providers that expose them.
+
+    Moonraker stores both in ``raw_data``; PrusaConnect keeps a partial
+    ``position`` on its state object.
+    """
+    raw_data = state.raw_data if isinstance(getattr(state, "raw_data", None), dict) else {}
+    position = raw_data.get("position")
+    if not isinstance(position, dict):
+        position = getattr(state, "position", None)
+    if not isinstance(position, dict) or not position:
+        position = None
+    z_offset = raw_data.get("z_offset")
+    if not isinstance(z_offset, (int, float)) or isinstance(z_offset, bool):
+        z_offset = None
+    return position, z_offset
+
+
 def printer_state_to_dict(state: PrinterState, printer_id: int | None = None, model: str | None = None) -> dict:
     """Convert PrinterState to a JSON-serializable dict.
 
@@ -905,6 +1086,14 @@ def printer_state_to_dict(state: PrinterState, printer_id: int | None = None, mo
                 if state_val is None and len(tray) == 1 and "id" in tray:
                     state_val = 9
 
+                filament_spool_id = tray.get("filament_spool_id")
+                try:
+                    filament_spool_id = int(filament_spool_id) if filament_spool_id is not None else None
+                except (TypeError, ValueError):
+                    filament_spool_id = None
+                if filament_spool_id is not None and filament_spool_id <= 0:
+                    filament_spool_id = None
+
                 trays.append(
                     {
                         "id": int(tray.get("id", 0)),
@@ -923,6 +1112,22 @@ def printer_state_to_dict(state: PrinterState, printer_id: int | None = None, mo
                         "drying_temp": tray.get("drying_temp"),
                         "drying_time": tray.get("drying_time"),
                         "state": state_val,
+                        # Snapmaker U1 / SpoolLink — must survive WebSocket AMS
+                        # broadcasts or the UI loses assigned-spool identity after
+                        # the first live update (HTTP /status already included these).
+                        "active": tray.get("active"),
+                        "loaded_to_feeder": tray.get("loaded_to_feeder"),
+                        "loaded_to_extruder": tray.get("loaded_to_extruder"),
+                        "filament_detected": tray.get("filament_detected"),
+                        "channel_state": tray.get("channel_state"),
+                        "channel_action_state": tray.get("channel_action_state"),
+                        "channel_error": tray.get("channel_error"),
+                        "filament_source": tray.get("filament_source"),
+                        "filament_spool_id": filament_spool_id,
+                        "remaining_weight": tray.get("remaining_weight"),
+                        "filament_spool_brand": tray.get("filament_spool_brand"),
+                        "filament_spool_material": tray.get("filament_spool_material"),
+                        "filament_spool_color_name": tray.get("filament_spool_color_name"),
                     }
                 )
             # Prefer humidity_raw (actual percentage) over humidity (index 1-5)
@@ -948,6 +1153,7 @@ def printer_state_to_dict(state: PrinterState, printer_id: int | None = None, mo
             ams_units.append(
                 {
                     "id": int(ams_data.get("id", 0)),
+                    "name": ams_data.get("name"),
                     "humidity": humidity_value,
                     "temp": ams_data.get("temp"),
                     "is_ams_ht": is_ams_ht,
@@ -963,7 +1169,7 @@ def printer_state_to_dict(state: PrinterState, printer_id: int | None = None, mo
                     "dry_sub_status": int(ams_data.get("dry_sub_status") or 0),
                     # Cannot-dry reasons from firmware (e.g. 1=InsufficientPower, 8=NeedPluginPower)
                     "dry_sf_reason": list(ams_data.get("dry_sf_reason") or []),
-                    # Module type: "ams", "n3f", "n3s" (from get_version)
+                    # Module type: "ams", "n3f", "n3s", "snapmaker_u1" (from get_version / Moonraker)
                     "module_type": str(ams_data.get("module_type") or ""),
                 }
             )
@@ -1015,11 +1221,12 @@ def printer_state_to_dict(state: PrinterState, printer_id: int | None = None, mo
     # Filter out chamber temp for models that don't have a real sensor
     # P1P, P1S, A1, A1Mini report meaningless chamber_temper values
     temperatures = state.temperatures
-    if not supports_chamber_temp(model):
+    if not chamber_temp_available(model, state):
         temperatures = {
             k: v for k, v in temperatures.items() if k not in ("chamber", "chamber_target", "chamber_heating")
         }
 
+    position, z_offset = toolhead_motion(state)
     result = {
         "connected": state.connected,
         "state": state.state,
@@ -1060,6 +1267,7 @@ def printer_state_to_dict(state: PrinterState, printer_id: int | None = None, mo
         "heatbreak_fan_speed": state.heatbreak_fan_speed,
         # Chamber light state
         "chamber_light": state.chamber_light,
+        **chamber_capabilities(state),
         # Active extruder for dual-nozzle printers (0=right, 1=left)
         "active_extruder": state.active_extruder,
         # Print speed mode (1=silent, 2=standard, 3=sport, 4=ludicrous)
@@ -1080,6 +1288,10 @@ def printer_state_to_dict(state: PrinterState, printer_id: int | None = None, mo
             }
             for n in (state.nozzle_rack or [])
         ],
+        "tool_slots": state.raw_data.get("tool_slots", []) if isinstance(state.raw_data, dict) else [],
+        # Toolhead position / Z offset for the manual controls (Klipper, PrusaConnect)
+        "position": position,
+        "z_offset": z_offset,
         # AMS drying support
         "supports_drying": supports_drying(model, state.firmware_version),
         # 1-indexed plate number parsed from gcode_file (e.g. /Metadata/plate_2.gcode).
@@ -1121,7 +1333,7 @@ async def init_printer_connections(db: AsyncSession):
     result = await db.execute(select(Printer).where(Printer.is_active.is_(True)))
     printers = result.scalars().all()
 
-    for printer in printers:
+    async def _connect(printer: Printer) -> None:
         try:
             await printer_manager.connect_printer(printer)
         except Exception as exc:  # noqa: BLE001 - one offline saved printer must not abort app startup
@@ -1131,3 +1343,7 @@ async def init_printer_connections(db: AsyncSession):
                 exc,
                 exc_info=True,
             )
+
+    # Connect concurrently: a slow or unreachable printer (HTTP timeouts,
+    # fallback URL probes) must not delay every other printer's startup.
+    await asyncio.gather(*(_connect(printer) for printer in printers))

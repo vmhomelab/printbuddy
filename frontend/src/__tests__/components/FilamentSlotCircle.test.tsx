@@ -50,6 +50,23 @@ describe('FilamentSlotCircle', () => {
     expectColor(circle.style.backgroundColor, '#00FF00', 'rgb(0, 255, 0)');
   });
 
+  it('fills hashed non-Bambu colors instead of producing ##hex', () => {
+    const { container } = render(
+      <FilamentSlotCircle trayColor="#E72F1D" trayType="PLA" isEmpty={false} slotNumber={1} />
+    );
+    const circle = container.firstChild as HTMLElement;
+    expect(circle.style.borderStyle).toBe('solid');
+    expectColor(circle.style.backgroundColor, '#E72F1D', 'rgb(231, 47, 29)');
+  });
+
+  it('strips alpha from RRGGBBAA colors', () => {
+    const { container } = render(
+      <FilamentSlotCircle trayColor="0056B8FF" trayType="PLA" isEmpty={false} slotNumber={3} />
+    );
+    const circle = container.firstChild as HTMLElement;
+    expectColor(circle.style.backgroundColor, '#0056B8', 'rgb(0, 86, 184)');
+  });
+
   it('uses dark background when trayType is set but no color', () => {
     const { container } = render(
       <FilamentSlotCircle trayType="PLA" isEmpty={false} slotNumber={1} />

@@ -15,6 +15,13 @@ class VirtualPrinter(Base):
     name: Mapped[str] = mapped_column(String(100), default="Printbuddy")
     enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     mode: Mapped[str] = mapped_column(String(20), default="immediate")  # immediate|review|print_queue|proxy
+    # Which slicer-facing protocol this VP speaks:
+    #   bambu     - emulates a Bambu Lab printer (SSDP + FTPS + MQTT on bind_ip)
+    #   moonraker - OctoPrint/Moonraker-compatible HTTP upload endpoint served on
+    #               the Printbuddy port (/api/v1/vp-host/<id>), for Klipper,
+    #               Prusa, OctoPrint and other non-Bambu printers (#52)
+    protocol: Mapped[str] = mapped_column(String(20), server_default="bambu", default="bambu")
+    api_key: Mapped[str | None] = mapped_column(String(64), nullable=True)  # moonraker protocol: X-Api-Key
     auto_dispatch: Mapped[bool] = mapped_column(
         Boolean, server_default="true"
     )  # print_queue mode: auto-start or manual
@@ -23,6 +30,11 @@ class VirtualPrinter(Base):
     )  # print_queue mode: pin per-slot type+color from the 3MF onto the queue
     # item so the scheduler refuses to dispatch onto a printer with the wrong
     # filament loaded (#1188).
+    # Project every upload of this VP is linked to (archive, queue items and
+    # review-mode pending uploads). NULL = no project.
+    default_project_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("projects.id", ondelete="SET NULL"), nullable=True
+    )
     model: Mapped[str | None] = mapped_column(String(50), nullable=True)  # SSDP model code (server mode)
     access_code: Mapped[str | None] = mapped_column(String(8), nullable=True)  # 8 chars (server mode)
     target_printer_id: Mapped[int | None] = mapped_column(

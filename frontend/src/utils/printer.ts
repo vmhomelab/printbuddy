@@ -1,5 +1,5 @@
 import { appAssetPath } from './assetPaths';
-import type { PrintQueueItem } from '../api/client';
+import { api, type PrintQueueItem, type Printer } from '../api/client';
 
 const PRINTER_IMAGE_BASE = '/img/printers';
 const DEFAULT_PRINTER_IMAGE = `${PRINTER_IMAGE_BASE}/default.png`;
@@ -13,6 +13,7 @@ const MODEL_IMAGE_ALIASES: Array<[RegExp, string]> = [
   [/^h2dpro$/, 'h2dpro'],
   [/^h2d$/, 'h2d'],
   [/^h2c$/, 'h2c'],
+  [/^(?:h3c|n10)$/, 'h3c'],
   [/^h2s$/, 'h2d'],
   [/^o1c$/, 'o1c'],
   [/^o1e$/, 'o1e'],
@@ -46,7 +47,7 @@ const MODEL_IMAGE_ALIASES: Array<[RegExp, string]> = [
   [/^prusaxl$/, 'prusa-xl'],
   [/^prusamini$/, 'prusa-mini+'],
   [/^prusamk3s$/, 'prusa-mk3s+'],
-  [/^(?:klipper|prusalink|genericklipperprinter|genericfdmprinter)$/, 'generic-printer'],
+  [/^(?:klipper|prusalink|octoprint|genericklipperprinter|genericfdmprinter)$/, 'generic-printer'],
 ];
 
 function normalizePrinterModel(model: string): string {
@@ -59,6 +60,12 @@ function printerImagePath(filename: string): string {
 
 export function getDefaultPrinterImage(): string {
   return appAssetPath(DEFAULT_PRINTER_IMAGE);
+}
+
+export function getPrinterDisplayImage(printer: Pick<Printer, 'id' | 'model' | 'custom_image_filename'>): string {
+  return printer.custom_image_filename
+    ? api.getPrinterCustomImageUrl(printer.id, printer.custom_image_filename)
+    : getPrinterImage(printer.model);
 }
 
 export function getPrinterImage(model: string | null | undefined): string {

@@ -47,6 +47,7 @@ MODEL_TO_API_KEY = {
     "H2D": "h2d",
     "H2C": "h2c",
     "H2S": "h2s",
+    "H3C": "h3c",
     "P2S": "p2s",
     "X1E": "x1e",
     "X2D": "x2d",
@@ -71,6 +72,7 @@ MODEL_TO_API_KEY = {
     "N9": "a2l",
     "N6": "x2d",
     "N7": "p2s",
+    "N10": "h3c",
 }
 
 # Reverse mapping: API key to model codes
@@ -87,6 +89,7 @@ API_KEY_TO_DEV_MODEL = {
     "x1e": "C13",
     "x2d": "N6",
     "h2d-pro": "O1E",
+    "h3c": "N10",
 }
 
 # Wiki firmware release history pages (primary version source)
@@ -103,6 +106,8 @@ API_KEY_TO_WIKI_PATH = {
     "p2s": "/en/p2s/manual/p2s-firmware-release-history",
     "x2d": "/en/x2d/manual/x2d-firmware-release-history",
     "h2d-pro": "/en/h2d-pro/manual/firmware-release-history",
+    # H3C: no model prefix in the page name, like the H2D Pro.
+    "h3c": "/en/h3c/manual/firmware-release-history",
 }
 
 
@@ -274,6 +279,16 @@ class FirmwareCheckService:
                 seen.add(v)
                 versions.append((v, date))
 
+            if versions:
+                return versions
+
+            # H3C-style headings, "OTA 01.01.03.00" with id="ota-01010300":
+            # no release date on the page.
+            for a, b, c, d in re.findall(r'id="ota-(\d{2})(\d{2})(\d{2})(\d{2})"', response.text):
+                v = f"{a}.{b}.{c}.{d}"
+                if v not in seen:
+                    seen.add(v)
+                    versions.append((v, None))
             if versions:
                 return versions
 

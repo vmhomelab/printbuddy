@@ -51,6 +51,7 @@ Printbuddy uses a provider-based architecture for multiple printer platforms.
 Current state:
 
 - Bambu Lab support from the original foundation ✅
+  - Bambu Lab H3C with AMS 3H ⌛ (Experimental, not tested on hardware)
 - Prusa support via PrusaLink ✅ (Prusa Connect available, not tested)
 - Klipper (open firmware) via Moonraker – Klipper, Mainsail and Fluidd ✅
   - capability-based chamber, light and part-fan control (e.g. QIDI Q2)
@@ -220,6 +221,10 @@ network_mode: host
 
 Then enable the commented `ports:` block in the compose file instead.
 
+### iPhone home-screen app
+
+Optional: a small launcher opens Printbuddy full screen from the iPhone home screen and switches automatically between the local address on home Wi-Fi and a Tailscale address everywhere else. Setup: [deploy/ios-launcher/README.md](deploy/ios-launcher/README.md)
+
 ---
 
 ## Printer provider direction
@@ -236,7 +241,7 @@ Planned providers:
 | `prusaconnect` | Prusa Connect (cloud) | Implemented, not tested ⌛ |
 | `pcl` | Prusa Connect Local (hosted server) | Implemented, in testing ⌛ |
 | `elegoo_sdcp` | Elegoo SDCP (e.g. Centauri Carbon / CC1) | Implemented, in testing ⌛ |
-| `octoprint` | OctoPrint REST API (Marlin / RepRap printers) | (mplemented, in testing ⌛ |
+| `octoprint` | OctoPrint REST API (Marlin / RepRap printers) | Implemented, in testing ⌛ |
 
 Each printer stores its provider plus provider metadata; provider-specific clients are created through `backend/app/services/printer_providers/factory.py`.
 

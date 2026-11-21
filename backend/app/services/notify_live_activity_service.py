@@ -68,7 +68,7 @@ class NotifyLiveActivityService:
         progress = live_activity_progress(data)
         layer_num = self._optional_int(data.get("layer_num"))
         total_layers = self._optional_int(data.get("total_layers"))
-        subtask_id = self._subtask_id(data)
+        subtask_id = self._subtask_id(data) or self._state_subtask_id(printer_id)
 
         for provider, recipient_id, config in providers:
             provider_id = provider.id
@@ -103,6 +103,7 @@ class NotifyLiveActivityService:
         state: str = "running",
     ) -> None:
         """Update active Live Activities for a progress change."""
+        subtask_id = self._normalize_subtask_id(subtask_id)
         providers = await self._enabled_notify_providers(db, printer_id)
         for provider, recipient_id, config in providers:
             provider_id = provider.id
@@ -575,7 +576,7 @@ class NotifyLiveActivityService:
         state: Any,
     ) -> None:
         filename = getattr(state, "subtask_name", None) or getattr(state, "current_print", None) or "Unknown print"
-        subtask_id = getattr(state, "subtask_id", None)
+        subtask_id = self._normalize_subtask_id(getattr(state, "subtask_id", None))
         progress = live_activity_progress(state)
         remaining_time = self._state_remaining_time_seconds(state)
         layer_num = self._optional_int(getattr(state, "layer_num", None))
@@ -601,7 +602,7 @@ class NotifyLiveActivityService:
                 recipient_id=recipient_id,
                 printer_id=printer_id,
                 activity_id=activity_id,
-                subtask_id=str(subtask_id) if subtask_id else None,
+                subtask_id=subtask_id,
                 filename=str(filename),
                 progress=progress,
                 remaining_time=remaining_time,
@@ -779,15 +780,49 @@ class NotifyLiveActivityService:
         return str(data.get("filename") or data.get("gcode_file") or "Unknown print")
 
     @staticmethod
-    def _subtask_id(data: dict[str, Any]) -> str | None:
-        value = data.get("subtask_id") or data.get("task_id")
-        return str(value) if value else None
+    def _normalize_subtask_id(value: Any) -> str | None:
+        """Return a usable print job ID; Bambu reports "0" for local/non-cloud prints."""
+        if value is None:
+            return None
+        text = str(value).strip()
+        return None if text in ("", "0") else text
+
+    @classmethod
+    def _subtask_id(cls, data: dict[str, Any]) -> str | None:
+        value = cls._normalize_subtask_id(data.get("subtask_id")) or cls._normalize_subtask_id(data.get("task_id"))
+        if value:
+            return value
+        # Bambu print-start events only carry the job ID inside the raw MQTT push.
+        raw_data = data.get("raw_data")
+        if isinstance(raw_data, dict):
+            return cls._normalize_subtask_id(raw_data.get("subtask_id"))
+        return None
+
+    def _state_subtask_id(self, printer_id: int) -> str | None:
+        try:
+            state = self._printer_status(printer_id)
+        except Exception:
+            return None
+        if not self._is_running_state(state):
+            return None
+        return self._normalize_subtask_id(getattr(state, "subtask_id", None))
 
     @staticmethod
-    def _same_print(activity: NotificationLiveActivity, *, subtask_id: str | None, filename: str | None) -> bool:
-        if subtask_id and activity.subtask_id == subtask_id:
-            return True
-        return bool(filename and activity.filename == filename and not activity.subtask_id)
+    def _normalized_filename(filename: str | None) -> str:
+        return str(filename or "").replace("_", " ").strip().casefold()
+
+    @classmethod
+    def _same_print(cls, activity: NotificationLiveActivity, *, subtask_id: str | None, filename: str | None) -> bool:
+        activity_subtask_id = cls._normalize_subtask_id(activity.subtask_id)
+        if subtask_id and activity_subtask_id:
+            return activity_subtask_id == subtask_id
+        # One side has no job ID (local print, or the start event arrived without
+        # it): fall back to the display name. Progress/keepalive store the raw
+        # subtask name while print-start replaces underscores, so normalize both.
+        normalized = cls._normalized_filename(filename)
+        return bool(
+            normalized and normalized != "unknown print" and cls._normalized_filename(activity.filename) == normalized
+        )
 
     @classmethod
     def _activity_payload_unchanged(

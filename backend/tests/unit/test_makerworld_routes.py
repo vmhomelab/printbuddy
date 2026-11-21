@@ -19,13 +19,18 @@ import pytest
 
 from backend.app.api.routes.makerworld import _canonical_url
 from backend.app.models.library import LibraryFile, LibraryFolder
-from backend.app.services.makerworld import MakerWorldUnavailableError
+from backend.app.services.makerworld import MakerWorldForbiddenError, MakerWorldUnavailableError
 
 
 def _fake_service(**stubs):
     """Build an AsyncMock MakerWorldService with the given async method stubs."""
     svc = AsyncMock()
     svc.close = AsyncMock()
+    # Existing import fixtures model older design payloads without an instance
+    # id. They must exercise the supported legacy fallback rather than return
+    # AsyncMock internals from unstubbed service methods.
+    svc.get_design_instances = AsyncMock(return_value={"total": 0, "hits": []})
+    svc.get_instance_download = AsyncMock(return_value={})
     for name, value in stubs.items():
         if callable(value) and not isinstance(value, AsyncMock):
             setattr(svc, name, AsyncMock(side_effect=value))
@@ -232,6 +237,127 @@ class TestImport:
     real DB writes, real ``save_3mf_bytes_to_library``, real folder auto-creation."""
 
     _FAKE_3MF_BYTES = b"PK\x03\x04not-a-real-3mf"
+
+    @pytest.mark.asyncio
+    async def test_import_prefers_instance_download_url(self, async_client):
+        """The fixed per-instance endpoint is used before the legacy profile API."""
+        design = _default_design()
+        design["instances"] = [{"id": 4028000, "profileId": 298919107, "title": "9 cells"}]
+        svc = _fake_service(
+            get_design=design,
+            get_instance_download=_default_manifest(),
+            download_3mf=(self._FAKE_3MF_BYTES, "benchy.3mf"),
+        )
+
+        with patch("backend.app.api.routes.makerworld._build_service", AsyncMock(return_value=svc)):
+            resp = await async_client.post(
+                "/api/v1/makerworld/import",
+                json={"model_id": 1400373, "profile_id": 298919107},
+            )
+
+        assert resp.status_code == 200, resp.text
+        svc.get_instance_download.assert_awaited_once_with(4028000)
+        svc.get_profile_download.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_import_falls_back_to_legacy_profile_download_when_instance_has_no_url(self, async_client):
+        """An empty instance response must retain compatibility with the legacy endpoint."""
+        design = _default_design()
+        design["instances"] = [{"id": 4028000, "profileId": 298919107, "title": "9 cells"}]
+        svc = _fake_service(
+            get_design=design,
+            get_instance_download={},
+            get_profile_download=_default_manifest(),
+            download_3mf=(self._FAKE_3MF_BYTES, "benchy.3mf"),
+        )
+
+        with patch("backend.app.api.routes.makerworld._build_service", AsyncMock(return_value=svc)):
+            resp = await async_client.post(
+                "/api/v1/makerworld/import",
+                json={"model_id": 1400373, "profile_id": 298919107},
+            )
+
+        assert resp.status_code == 200, resp.text
+        svc.get_instance_download.assert_awaited_once_with(4028000)
+        svc.get_profile_download.assert_awaited_once_with(298919107, "US2bb73b106683e5")
+
+    @pytest.mark.asyncio
+    async def test_import_falls_back_to_legacy_profile_download_when_instance_is_forbidden(self, async_client):
+        """A 403 from the f3mf endpoint must not abort the import while the legacy endpoint works."""
+        design = _default_design()
+        design["instances"] = [{"id": 4028000, "profileId": 298919107, "title": "9 cells"}]
+
+        async def _forbidden(_instance_id):
+            raise MakerWorldForbiddenError("The client does not have access rights to the content.")
+
+        svc = _fake_service(
+            get_design=design,
+            get_instance_download=_forbidden,
+            get_profile_download=_default_manifest(),
+            download_3mf=(self._FAKE_3MF_BYTES, "benchy.3mf"),
+        )
+
+        with patch("backend.app.api.routes.makerworld._build_service", AsyncMock(return_value=svc)):
+            resp = await async_client.post(
+                "/api/v1/makerworld/import",
+                json={"model_id": 1400373, "profile_id": 298919107},
+            )
+
+        assert resp.status_code == 200, resp.text
+        svc.get_profile_download.assert_awaited_once_with(298919107, "US2bb73b106683e5")
+
+    @pytest.mark.asyncio
+    async def test_import_reports_instance_refusal_when_legacy_also_forbidden(self, async_client):
+        design = _default_design()
+        design["instances"] = [{"id": 4028000, "profileId": 298919107, "title": "9 cells"}]
+
+        async def _instance_forbidden(_instance_id):
+            raise MakerWorldForbiddenError("Requires points redemption")
+
+        async def _profile_forbidden(_profile_id, _model_id):
+            raise MakerWorldForbiddenError("legacy refused")
+
+        svc = _fake_service(
+            get_design=design,
+            get_instance_download=_instance_forbidden,
+            get_profile_download=_profile_forbidden,
+        )
+
+        with patch("backend.app.api.routes.makerworld._build_service", AsyncMock(return_value=svc)):
+            resp = await async_client.post(
+                "/api/v1/makerworld/import",
+                json={"model_id": 1400373, "profile_id": 298919107},
+            )
+
+        assert resp.status_code == 403
+        assert "points" in resp.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_import_reports_instance_refusal_when_legacy_returns_400(self, async_client):
+        """A legacy 400 must not hide the real refusal from the primary endpoint."""
+        design = _default_design()
+        design["instances"] = [{"id": 4028000, "profileId": 298919107, "title": "9 cells"}]
+
+        async def _instance_forbidden(_instance_id):
+            raise MakerWorldForbiddenError("The client does not have access rights to the content.")
+
+        async def _profile_bad_request(_profile_id, _model_id):
+            raise MakerWorldUnavailableError("Bambu Lab API unexpected status 400 for profile 298919107")
+
+        svc = _fake_service(
+            get_design=design,
+            get_instance_download=_instance_forbidden,
+            get_profile_download=_profile_bad_request,
+        )
+
+        with patch("backend.app.api.routes.makerworld._build_service", AsyncMock(return_value=svc)):
+            resp = await async_client.post(
+                "/api/v1/makerworld/import",
+                json={"model_id": 1400373, "profile_id": 298919107},
+            )
+
+        assert resp.status_code == 403
+        assert "access rights" in resp.json()["detail"]
 
     @pytest.mark.asyncio
     async def test_source_archive_is_opt_in_and_disabled_by_default(

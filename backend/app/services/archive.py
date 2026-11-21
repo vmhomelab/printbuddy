@@ -41,6 +41,39 @@ def _copy_and_fsync(src: Path, dst: Path, chunk_size: int = 1024 * 1024) -> None
     shutil.copystat(src, dst)
 
 
+FILELESS_ARCHIVE_FOLDER = "_fileless"
+
+
+def resolve_archive_dir(archive) -> Path:
+    """Return the on-disk directory that holds an archive's side files.
+
+    Archives with a stored print file keep photos, thumbnails and timelapses
+    next to that file. Fallback archives without a file (non-Bambu providers
+    such as Moonraker/Klipper, or Bambu prints whose 3MF could not be fetched)
+    have ``file_path == ""``; for those a dedicated per-archive folder is used.
+    The folder lives under ``_fileless`` so it can never collide with the
+    per-printer folders (``archive/<printer_id>/...``).
+    """
+    file_path = (getattr(archive, "file_path", None) or "").strip()
+    if file_path:
+        return settings.base_dir / Path(file_path).parent
+    return settings.archive_dir / FILELESS_ARCHIVE_FOLDER / str(archive.id)
+
+
+def resolve_archive_photo_path(archive, filename: str) -> Path:
+    """Return the path of a stored archive photo.
+
+    Older versions wrote photos of fileless archives to ``archive/<id>/photos``
+    while every reader looked elsewhere; keep those photos reachable.
+    """
+    photo_path = resolve_archive_dir(archive) / "photos" / filename
+    if not photo_path.exists() and not (getattr(archive, "file_path", None) or "").strip():
+        legacy_path = settings.archive_dir / str(archive.id) / "photos" / filename
+        if legacy_path.exists():
+            return legacy_path
+    return photo_path
+
+
 def resolve_display_stem(filename: str) -> str:
     """Return a clean human-readable stem from a 3MF/gcode filename.
 
@@ -54,13 +87,14 @@ def resolve_display_stem(filename: str) -> str:
 
     - ``.gcode.3mf`` → bare stem (Bambu Studio FTP send)
     - ``.3mf``       → bare stem
+    - ``.bgcode``    → bare stem (Prusa binary G-code)
     - ``.gcode``     → bare stem (rare standalone gcode upload)
 
     Anything else passes through unchanged.
     """
     name = Path(filename).name  # drop any path components
     lower = name.lower()
-    for suffix in (".gcode.3mf", ".3mf", ".gcode"):
+    for suffix in (".gcode.3mf", ".3mf", ".bgcode", ".gcode"):
         if lower.endswith(suffix):
             return name[: -len(suffix)]
     return Path(name).stem
@@ -1050,6 +1084,7 @@ class ArchiveService:
         project_id: int | None = None,
         subtask_id: str | None = None,
         prefer_filename_for_name: bool = False,
+        plan_item_id: int | None = None,
     ) -> PrintArchive | None:
         """Archive a 3MF file with metadata.
 
@@ -1065,6 +1100,9 @@ class ArchiveService:
             subtask_id: MQTT-provided task identifier (optional). Used to match an
                 existing archive across a backend restart mid-print so the
                 original row can be resumed instead of cancelled (#972).
+            plan_item_id: Project plan row ("job" plate) this print belongs to
+                (optional, set by the scheduler for queue items created from a
+                project plan).
             prefer_filename_for_name: When True, use the uploaded filename stem as the
                 archive's display name even if the 3MF embeds a `print_name` in its
                 metadata. Used by virtual-printer flows so users who rename a job in
@@ -1139,9 +1177,19 @@ class ArchiveService:
             if match:
                 plate_number = int(match.group(1))
 
-        # Parse 3MF metadata
-        parser = ThreeMFParser(dest_file, plate_number=plate_number)
-        metadata = parser.parse()
+        # Parse metadata: 3MF via its embedded config, raw G-code (Moonraker/
+        # OctoPrint-compatible virtual printers, #52) via its comment headers.
+        if dest_file.suffix.lower() == ".gcode":
+            from backend.app.utils.gcode_metadata import parse_gcode_metadata
+
+            metadata = parse_gcode_metadata(dest_file)
+        elif dest_file.suffix.lower() == ".bgcode":
+            from backend.app.utils.gcode_metadata import parse_bgcode_metadata
+
+            metadata = parse_bgcode_metadata(dest_file)
+        else:
+            parser = ThreeMFParser(dest_file, plate_number=plate_number)
+            metadata = parser.parse()
 
         # Save thumbnail if present
         thumbnail_path = None
@@ -1219,6 +1267,7 @@ class ArchiveService:
             extra_data=metadata,
             created_by_id=created_by_id,
             project_id=project_id,
+            plan_item_id=plan_item_id,
             subtask_id=subtask_id,
         )
 
@@ -1407,10 +1456,11 @@ class ArchiveService:
 
                 dir_to_delete = archive_dir
         else:
-            logger.error(
-                f"SECURITY: Refusing to delete files for archive {archive_id} - "
-                f"file_path is empty or invalid: '{archive.file_path}'"
-            )
+            # Fileless fallback archive: only its dedicated side-file folder
+            # (photos, thumbnail, timelapse) may be removed.
+            fileless_dir = resolve_archive_dir(archive)
+            if fileless_dir.is_dir():
+                dir_to_delete = fileless_dir
 
         # NULL stale thumbnail_path on linked PrintLogEntries before the FK
         # SET-NULL cascade fires. The on-disk file is about to be removed by
@@ -1418,6 +1468,11 @@ class ArchiveService:
         # gets SET NULL by the FK) would otherwise point at a missing file
         # and produce 404 storms in the print-log view (#1348-followup).
         await _null_print_log_thumbnail_paths(self.db, archive_id)
+
+        # Fail reason statistics: the run progress rows belong to the archive.
+        from backend.app.services.failure_progress import delete_progress_for_archive
+
+        await delete_progress_for_archive(self.db, archive_id)
 
         # Delete database record FIRST — if the commit fails (e.g. database locked
         # during concurrent bulk deletes), the files stay on disk and nothing is lost.
@@ -1447,9 +1502,9 @@ class ArchiveService:
         if not archive:
             return False
 
-        # Get archive directory
-        file_path = settings.base_dir / archive.file_path
-        archive_dir = file_path.parent
+        # Get archive directory (fileless fallback archives get their own folder)
+        archive_dir = resolve_archive_dir(archive)
+        await asyncio.to_thread(archive_dir.mkdir, parents=True, exist_ok=True)
 
         # Save timelapse - use thread pool to avoid blocking event loop
         # (timelapse files can be 100MB+, sync write blocks for seconds)

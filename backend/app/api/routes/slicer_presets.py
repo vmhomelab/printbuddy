@@ -42,7 +42,7 @@ from backend.app.services.bambu_cloud import (
     BambuCloudError,
     BambuCloudService,
 )
-from backend.app.services.orca_cloud import OrcaCloudAuthError, OrcaCloudError
+from backend.app.services.orca_cloud import OrcaCloudAuthError, OrcaCloudError, parse_orca_string_list
 from backend.app.services.slicer_api import (
     BundleNotFoundError,
     BundleSummary,
@@ -225,12 +225,9 @@ async def _fetch_orca_cloud_presets(
         if slot == "filament":
             preset.filament_type = _first_scalar(content.get("filament_type"))
             preset.filament_colour = _first_scalar(content.get("default_filament_colour"))
-        compatible = content.get("compatible_printers")
-        if slot in ("process", "filament") and isinstance(compatible, str):
-            preset.compatible_printers = [compatible]
-        elif slot in ("process", "filament") and isinstance(compatible, list):
-            values = [value.strip() for value in compatible if isinstance(value, str) and value.strip()]
-            preset.compatible_printers = values or None
+        if slot in ("process", "filament"):
+            # Orca serialises string vectors with quoted items ('"Printer"').
+            preset.compatible_printers = parse_orca_string_list(content.get("compatible_printers")) or None
         slots[slot].append(preset)
 
     _orca_cloud_cache[cache_key] = (now, slots)
@@ -263,7 +260,12 @@ async def _fetch_local_presets(db: AsyncSession) -> dict[str, list[UnifiedPreset
 def _parse_compatible_printers(raw: str | None) -> list[str] | None:
     """``LocalPreset.compatible_printers`` stores a JSON array of printer-preset
     names. Return the parsed list, or ``None`` on missing / malformed data so
-    the SliceModal falls back to the uploaded-bundle index for that preset."""
+    the SliceModal falls back to the uploaded-bundle index for that preset.
+
+    Clone/rename matching (``" - Copy"``, custom suffixes, …) is handled on
+    the frontend via containment against these system names — no need to
+    synthesize alias strings here.
+    """
     if not raw:
         return None
     try:
@@ -272,7 +274,7 @@ def _parse_compatible_printers(raw: str | None) -> list[str] | None:
         return None
     if not isinstance(data, list):
         return None
-    names = [s for s in data if isinstance(s, str) and s.strip()]
+    names = [s.strip() for s in data if isinstance(s, str) and s.strip()]
     return names or None
 
 
@@ -332,7 +334,13 @@ async def _fetch_bundled_presets(db: AsyncSession) -> dict[str, list[UnifiedPres
                 continue
             # Bundled presets are addressed by name (the slicer resolves them
             # by name during the `inherits:` walk), so name doubles as id.
-            extra: dict[str, str | None] = {}
+            extra: dict[str, object] = {}
+            if slot in ("process", "filament"):
+                compatible = entry.get("compatible_printers")
+                if isinstance(compatible, list):
+                    extra["compatible_printers"] = [
+                        name for name in compatible if isinstance(name, str) and name.strip()
+                    ] or None
             if slot == "filament":
                 extra["filament_type"] = entry.get("filament_type")
                 extra["filament_colour"] = entry.get("filament_colour")
@@ -417,6 +425,18 @@ def _dedupe_by_name(
                 p.filament_type = t
             if p.filament_colour is None and c is not None:
                 p.filament_colour = c
+
+    # Cloud listings carry no compatible_printers either. Bambu's public cloud
+    # presets share their names with the slicer's stock presets, whose
+    # compatibility list is authoritative. The "@BBL <model>" name alone is
+    # not enough: an X2D filament without a nozzle suffix covers only the
+    # 0.6/0.8 mm nozzles, so the SliceModal would offer it for a 0.4 printer
+    # and the slicer would then reject the job.
+    for slot in ("process", "filament"):
+        compat_by_name = {p.name: p.compatible_printers for p in standard[slot] if p.compatible_printers}
+        for p in cloud[slot]:
+            if not p.compatible_printers and p.name in compat_by_name:
+                p.compatible_printers = list(compat_by_name[p.name])
 
     deduped_local = _empty_slots()
     deduped_standard = _empty_slots()

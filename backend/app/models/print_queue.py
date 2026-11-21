@@ -34,6 +34,10 @@ class PrintQueueItem(Base):
     )
     project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)
     batch_id: Mapped[int | None] = mapped_column(ForeignKey("print_batches.id", ondelete="SET NULL"), nullable=True)
+    # Plan row of a project "job" this item was queued for (progress tracking)
+    plan_item_id: Mapped[int | None] = mapped_column(
+        ForeignKey("project_plan_items.id", ondelete="SET NULL"), nullable=True, index=True
+    )
 
     # Scheduling
     position: Mapped[int] = mapped_column(Integer, default=0)  # Queue order

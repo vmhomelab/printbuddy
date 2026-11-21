@@ -19,6 +19,7 @@ from backend.app.services.discovery import (
     discovery_service,
     is_running_in_docker,
     moonraker_subnet_scanner,
+    octoprint_subnet_scanner,
     subnet_scanner,
 )
 from backend.app.services.network_utils import get_discovery_subnets
@@ -40,6 +41,7 @@ class DiscoveryInfo(BaseModel):
     ssdp_running: bool
     scan_running: bool
     moonraker_scan_running: bool = False
+    octoprint_scan_running: bool = False
     subnets: list[str] = []
 
 
@@ -58,6 +60,16 @@ class MoonrakerSubnetScanRequest(BaseModel):
     # Ports to probe per host. Default is DISCOVERY_MOONRAKER_PORTS or 7125,80.
     # Port 80 covers CosmOS / Fluidd reverse-proxies; hits still require
     # Moonraker-shaped JSON so unrelated HTTP services are ignored.
+    ports: list[int] | None = None
+
+
+class OctoPrintSubnetScanRequest(BaseModel):
+    """Request to scan a subnet for OctoPrint instances."""
+
+    subnet: str  # CIDR notation, e.g., "192.168.1.0/24"
+    timeout: float = 1.0  # Connection timeout per host
+    # Ports to probe per host. Default is DISCOVERY_OCTOPRINT_PORTS or 5000,80
+    # (OctoPrint's own port and OctoPi's haproxy).
     ports: list[int] | None = None
 
 
@@ -91,6 +103,7 @@ async def get_discovery_info(
         ssdp_running=discovery_service.is_running,
         scan_running=subnet_scanner.is_running,
         moonraker_scan_running=moonraker_subnet_scanner.is_running,
+        octoprint_scan_running=octoprint_subnet_scanner.is_running,
         subnets=get_discovery_subnets(),
     )
 
@@ -276,4 +289,74 @@ async def get_discovered_moonraker_printers(
             needs_auth=p.needs_auth,
         )
         for p in moonraker_subnet_scanner.discovered_printers
+    ]
+
+
+# OctoPrint subnet scanning
+
+
+@router.post("/octoprint/scan", response_model=SubnetScanStatus)
+async def start_octoprint_subnet_scan(
+    request: OctoPrintSubnetScanRequest,
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.DISCOVERY_SCAN),
+):
+    """Start a subnet scan for OctoPrint instances (unauthenticated discovery.xml / login page)."""
+    asyncio.create_task(
+        octoprint_subnet_scanner.scan_subnet(
+            request.subnet,
+            request.timeout,
+            ports=request.ports,
+        )
+    )
+    scanned, total = octoprint_subnet_scanner.progress
+    return SubnetScanStatus(
+        running=octoprint_subnet_scanner.is_running,
+        scanned=scanned,
+        total=total,
+    )
+
+
+@router.get("/octoprint/scan/status", response_model=SubnetScanStatus)
+async def get_octoprint_scan_status(
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.DISCOVERY_SCAN),
+):
+    """Get the current OctoPrint subnet scan status."""
+    scanned, total = octoprint_subnet_scanner.progress
+    return SubnetScanStatus(
+        running=octoprint_subnet_scanner.is_running,
+        scanned=scanned,
+        total=total,
+    )
+
+
+@router.post("/octoprint/scan/stop", response_model=SubnetScanStatus)
+async def stop_octoprint_subnet_scan(
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.DISCOVERY_SCAN),
+):
+    """Stop the current OctoPrint subnet scan."""
+    octoprint_subnet_scanner.stop()
+    scanned, total = octoprint_subnet_scanner.progress
+    return SubnetScanStatus(
+        running=octoprint_subnet_scanner.is_running,
+        scanned=scanned,
+        total=total,
+    )
+
+
+@router.get("/octoprint/printers", response_model=list[DiscoveredPrinterResponse])
+async def get_discovered_octoprint_printers(
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.DISCOVERY_SCAN),
+):
+    """Get OctoPrint instances found by the latest subnet scan."""
+    return [
+        DiscoveredPrinterResponse(
+            serial=p.serial,
+            name=p.name,
+            ip_address=p.ip_address,
+            model=p.model,
+            discovered_at=p.discovered_at,
+            api_url=p.api_url,
+            needs_auth=p.needs_auth,
+        )
+        for p in octoprint_subnet_scanner.discovered_printers
     ]

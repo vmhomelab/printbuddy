@@ -24,6 +24,16 @@ vi.mock('../../api/client', () => ({
 
 const mockApi = api as unknown as { getSliceJob: ReturnType<typeof vi.fn> };
 
+// The add-to-queue dialog has its own tests; here we only care which
+// sliced result the tracker hands to it.
+vi.mock('../../components/PrintModal', () => ({
+  PrintModal: (props: { mode: string; libraryFileId?: number; archiveId?: number; archiveName: string }) => (
+    <div data-testid="print-modal">
+      {props.mode}|{props.libraryFileId ?? '-'}|{props.archiveId ?? '-'}|{props.archiveName}
+    </div>
+  ),
+}));
+
 function Wrapper({ children }: { children: ReactNode }) {
   // A fresh QueryClient per test so invalidateQueries calls don't leak
   // between tests.
@@ -39,10 +49,20 @@ function Wrapper({ children }: { children: ReactNode }) {
   );
 }
 
-function TrackTrigger({ id, name }: { id: number; name: string }) {
+function TrackTrigger({
+  id,
+  name,
+  kind = 'libraryFile',
+  queueAfterSlice,
+}: {
+  id: number;
+  name: string;
+  kind?: 'libraryFile' | 'archive';
+  queueAfterSlice?: boolean;
+}) {
   const { trackJob } = useSliceJobTracker();
   return (
-    <button onClick={() => trackJob(id, 'libraryFile', name)}>
+    <button onClick={() => trackJob(id, kind, name, { queueAfterSlice })}>
       track-{id}
     </button>
   );
@@ -480,5 +500,85 @@ describe('SliceJobTrackerProvider — persistent progress toast', () => {
     expect(screen.getByText(/OldSidecar\.3mf/)).toBeDefined();
     // No progress percent is shown when null.
     expect(screen.queryByText(/%/)).toBeNull();
+  });
+
+  describe('queue after slice', () => {
+    function completedJob(id: number, result: Record<string, unknown>) {
+      return {
+        job_id: id,
+        status: 'completed',
+        kind: 'library_file',
+        source_id: 300,
+        source_name: 'Bracket.stl',
+        created_at: new Date().toISOString(),
+        started_at: new Date().toISOString(),
+        completed_at: new Date().toISOString(),
+        progress: null,
+        result,
+      };
+    }
+
+    async function runToCompletion(id: number) {
+      act(() => {
+        screen.getByText(`track-${id}`).click();
+      });
+      await act(async () => {
+        vi.advanceTimersByTime(1500);
+      });
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+    }
+
+    it('opens the add-to-queue dialog for the sliced library file when requested', async () => {
+      mockApi.getSliceJob.mockResolvedValue(
+        completedJob(20, { library_file_id: 555, name: 'Bracket.gcode.3mf' }),
+      );
+      render(
+        <Wrapper>
+          <TrackTrigger id={20} name="Bracket.stl" queueAfterSlice />
+        </Wrapper>,
+      );
+
+      await runToCompletion(20);
+
+      expect(screen.getByTestId('print-modal').textContent).toBe(
+        'add-to-queue|555|-|Bracket.gcode.3mf',
+      );
+    });
+
+    it('passes a sliced archive result as archiveId', async () => {
+      mockApi.getSliceJob.mockResolvedValue(
+        completedJob(21, { archive_id: 777, name: 'Bracket resliced' }),
+      );
+      render(
+        <Wrapper>
+          <TrackTrigger id={21} name="Bracket.3mf" kind="archive" queueAfterSlice />
+        </Wrapper>,
+      );
+
+      await runToCompletion(21);
+
+      expect(screen.getByTestId('print-modal').textContent).toBe(
+        'add-to-queue|-|777|Bracket resliced',
+      );
+    });
+
+    it('does not open the dialog when the option was not chosen', async () => {
+      mockApi.getSliceJob.mockResolvedValue(
+        completedJob(22, { library_file_id: 556, name: 'Bracket.gcode.3mf' }),
+      );
+      render(
+        <Wrapper>
+          <TrackTrigger id={22} name="Bracket.stl" />
+        </Wrapper>,
+      );
+
+      await runToCompletion(22);
+
+      expect(screen.getByText(/Sliced Bracket\.stl/)).toBeDefined();
+      expect(screen.queryByTestId('print-modal')).toBeNull();
+    });
   });
 });

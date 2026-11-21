@@ -4,6 +4,7 @@ from backend.app.models.api_key import APIKey
 from backend.app.models.archive import PrintArchive
 from backend.app.models.auth_ephemeral import AuthEphemeralToken, AuthRateLimitEvent
 from backend.app.models.color_catalog import ColorCatalogEntry
+from backend.app.models.custom_failure_report import CustomFailureReason, CustomFailureReport
 from backend.app.models.filament import Filament
 from backend.app.models.github_backup import GitHubBackupConfig, GitHubBackupLog
 from backend.app.models.group import Group, user_groups
@@ -22,6 +23,7 @@ from backend.app.models.print_batch import PrintBatch
 from backend.app.models.printer import Printer
 from backend.app.models.printer_fleet_group import PrinterFleetGroup, PrinterFleetGroupMember
 from backend.app.models.project import Project
+from backend.app.models.project_plan import ProjectPlanItem
 from backend.app.models.settings import Settings
 from backend.app.models.smart_plug import SmartPlug
 from backend.app.models.smart_plug_energy_snapshot import SmartPlugEnergySnapshot
@@ -40,6 +42,8 @@ __all__ = [
     "PrinterFleetGroup",
     "PrinterFleetGroupMember",
     "PrintArchive",
+    "CustomFailureReport",
+    "CustomFailureReason",
     "Filament",
     "Settings",
     "SmartPlug",
@@ -54,6 +58,7 @@ __all__ = [
     "notification_provider_printers",
     "NotificationLiveActivity",
     "Project",
+    "ProjectPlanItem",
     "APIKey",
     "AMSSensorHistory",
     "AmsLabel",

@@ -44,6 +44,19 @@ const mockPrusaPrinter = {
   model: 'MK4S',
 };
 
+const mockOctoPrintPrinter = {
+  ...mockPrinter,
+  id: 3,
+  name: 'Ender 3',
+  ip_address: '192.168.1.60',
+  serial_number: 'OCTOPRINT-192-168-1-60',
+  access_code: 'octoprint',
+  auth_token: 'old-key',
+  provider: 'octoprint',
+  api_url: 'http://192.168.1.60:5000',
+  model: null,
+};
+
 const mockStatus = {
   connected: true,
   state: 'IDLE',
@@ -164,5 +177,37 @@ describe('EditPrinterModal pre-flight', () => {
       prusalink_api_mode: 'legacy',
       prusalink_auth_mode: 'x_api_key',
     });
+  });
+
+  it('edits OctoPrint printers by URL and keeps the host in sync', async () => {
+    let updatePayload: Record<string, unknown> | null = null;
+    server.use(
+      http.get('/api/v1/printers/', () => HttpResponse.json([mockOctoPrintPrinter])),
+      http.patch('/api/v1/printers/:id', async ({ request }) => {
+        updatePayload = await request.json() as Record<string, unknown>;
+        return HttpResponse.json({ ...mockOctoPrintPrinter, ...updatePayload });
+      }),
+    );
+
+    render(<PrintersPage />);
+    await waitFor(() => expect(screen.getByText('Ender 3')).toBeInTheDocument());
+
+    const menuBtn = [...document.querySelectorAll('button')].find((b) =>
+      b.querySelector('.lucide-ellipsis-vertical'),
+    )!;
+    await userEvent.click(menuBtn);
+    await userEvent.click(await screen.findByRole('button', { name: /^edit$/i }));
+
+    const urlInput = await screen.findByLabelText('OctoPrint URL') as HTMLInputElement;
+    expect(urlInput.value).toBe('http://192.168.1.60:5000');
+    expect(screen.queryByPlaceholderText('192.168.1.100 or printer.local')).not.toBeInTheDocument();
+
+    await userEvent.clear(urlInput);
+    await userEvent.type(urlInput, 'octopi.local/');
+    await userEvent.click(screen.getByRole('button', { name: /save changes/i }));
+
+    await waitFor(() => expect(updatePayload).not.toBeNull());
+    expect(updatePayload).toMatchObject({ api_url: 'http://octopi.local', ip_address: 'octopi.local' });
+    expect(updatePayload?.auth_token).toBeUndefined();
   });
 });

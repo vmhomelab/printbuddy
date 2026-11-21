@@ -83,6 +83,23 @@ export function withStreamToken(url: string): string {
   return `${url}${sep}token=${encodeURIComponent(streamToken)}`;
 }
 
+// WebSocket auth: browsers can't set headers on the handshake, so the token
+// rides along as a second subprotocol. The server answers with only
+// "printbuddy.v1" (see backend/app/core/auth.py, WS_SUBPROTOCOL).
+const WS_SUBPROTOCOL = 'printbuddy.v1';
+
+/** Open the live-update WebSocket, authenticated with the current token when there is one. */
+export function openAuthenticatedWebSocket(url: string): WebSocket {
+  if (!authToken) return new WebSocket(url);
+  try {
+    return new WebSocket(url, [WS_SUBPROTOCOL, `bearer.${authToken}`]);
+  } catch {
+    // A token with characters not allowed in a subprotocol makes the constructor
+    // throw; connect without it so auth-disabled servers keep working.
+    return new WebSocket(url);
+  }
+}
+
 function parseContentDispositionFilename(header: string | null): string | null {
   if (!header) return null;
   // RFC 5987: filename*=utf-8''percent-encoded-name
@@ -272,7 +289,7 @@ export interface LongLivedCameraToken {
 }
 
 // Printer types
-export type PrinterProvider = 'bambu' | 'klipper' | 'mainsail' | 'fluidd' | 'prusalink' | 'prusaconnect' | 'elegoo_sdcp';
+export type PrinterProvider = 'bambu' | 'klipper' | 'mainsail' | 'fluidd' | 'prusalink' | 'prusaconnect' | 'elegoo_sdcp' | 'octoprint';
 
 export interface Printer {
   id: number;
@@ -286,6 +303,8 @@ export interface Printer {
   provider_options: string | null;
   model: string | null;
   location: string | null;  // Group/location name
+  power_watts?: number | null;  // Optional avg power while printing (W), used for energy cost estimates
+  custom_image_filename: string | null;
   nozzle_count: number;  // 1 or 2, auto-detected from MQTT
   is_active: boolean;
   auto_archive: boolean;
@@ -334,6 +353,13 @@ export interface AMSTray {
   channel_action_state?: string | null;
   channel_error?: string | null;
   filament_source?: string | null;
+  /** Snapmaker U1 SpoolLink / Moonraker Spoolman spool id when the slot is bound. */
+  filament_spool_id?: number | null;
+  remaining_weight?: number | null;
+  /** Identity fields from Moonraker Spoolman proxy (independent of Printbuddy Spoolman sync). */
+  filament_spool_brand?: string | null;
+  filament_spool_material?: string | null;
+  filament_spool_color_name?: string | null;
 }
 
 export interface AMSUnit {
@@ -349,7 +375,9 @@ export interface AMSUnit {
   dry_status: number;     // 0=Off, 1=Checking, 2=Drying, 3=Cooling, 4=Stopping, 5=Error
   dry_sub_status: number; // 0=Off, 1=Heating, 2=Dehumidify
   dry_sf_reason: number[]; // Cannot-dry reasons (1=InsufficientPower, 8=NeedPluginPower)
-  module_type: string;    // "ams", "n3f", "n3s"
+  module_type: string;    // "ams", "n3f", "n3s", "n10a" (the H3C's AMS 3H)
+  ams_type?: number | null;  // Bambu Studio's AMS type; 6 = AMS 3H (H3C, nine slots)
+  dry_zone_slots?: number[]; // AMS 3H: the slots (0-8) of the zone that can dry
 }
 
 export interface NozzleInfo {
@@ -400,6 +428,16 @@ export interface FilaSwitchState {
   info: number;
 }
 
+export interface GenericToolSlot {
+  id: number;
+  extruder: string;
+  nozzle_diameter: string;
+  active: boolean;
+  filament_present: boolean | null;
+  docked: boolean | null;
+  path_present: boolean | null;
+}
+
 export interface PrinterStatus {
   id: number;
   name: string;
@@ -447,6 +485,7 @@ export interface PrinterStatus {
   door_open: boolean;  // Enclosure door open (X1/P1S/P2S/H2*)
   nozzles: NozzleInfo[];  // Nozzle hardware info (index 0=left/primary, 1=right)
   nozzle_rack: NozzleRackSlot[];  // H2C 6-nozzle tool-changer rack
+  tool_slots: GenericToolSlot[];  // Generic multi-tool Klipper local spool slots
   print_options: PrintOptions | null;  // AI detection and print options
   // Calibration stage tracking
   stg_cur: number;  // Current stage number (-1 = not calibrating)
@@ -458,6 +497,11 @@ export interface PrinterStatus {
   speed_level: number;
   // Chamber light on/off
   chamber_light: boolean;
+  // Provider-detected chamber capabilities (e.g. Moonraker objects).
+  // null/undefined = provider does not report the capability explicitly.
+  chamber_light_supported?: boolean | null;
+  chamber_heater_supported?: boolean;
+  chamber_temp_max?: number | null;
   // Active extruder for dual nozzle (0=right, 1=left)
   active_extruder: number;
   // AMS mapping - which AMS is connected to which nozzle
@@ -510,6 +554,7 @@ export interface PrinterCreate {
   provider_options?: string | null;
   model?: string;
   location?: string;
+  power_watts?: number | null;
   auto_archive?: boolean;
   reconnect_interval_seconds?: number;
   external_camera_url?: string | null;
@@ -815,6 +860,17 @@ export interface ProjectStats {
   bom_total_items: number;
   bom_completed_items: number;
   bom_cost: number;
+  // Planned totals: from the job plan, or from linked folder files when there is no plan
+  planned_source?: 'plan' | 'files' | null;
+  planned_print_time_hours?: number;
+  planned_filament_grams?: number;
+  plan_total_plates?: number;
+  plan_completed_plates?: number;
+  plan_queued_plates?: number;
+  plan_printing_plates?: number;
+  plan_failed_plates?: number;
+  plan_remaining_plates?: number;
+  plan_progress_percent?: number | null;
 }
 
 export interface ProjectChildPreview {
@@ -849,6 +905,8 @@ export interface Project {
   stats?: ProjectStats;
   url: string | null;  // External link rendered next to project name on the card (#1155)
   cover_image_filename: string | null;  // Filename within project attachments dir (#1155)
+  order_number?: string | null;  // External order / tracking number (e.g. Etsy)
+  waste_percent?: number | null;  // Material waste / purge surcharge (%)
 }
 
 export interface ProjectAttachment {
@@ -886,6 +944,10 @@ export interface ProjectListItem {
   archives: ArchivePreview[];
   url: string | null;  // #1155
   cover_image_filename: string | null;  // #1155
+  order_number?: string | null;
+  plan_total_plates?: number;
+  plan_completed_plates?: number;
+  estimated_costs?: CostTotals | null;  // Planned production cost
 }
 
 export interface ProjectCreate {
@@ -901,6 +963,8 @@ export interface ProjectCreate {
   budget?: number | null;
   parent_id?: number;
   url?: string | null;  // #1155
+  order_number?: string | null;
+  folder_ids?: number[];  // File Manager folders to link right away
 }
 
 export interface ProjectUpdate {
@@ -917,6 +981,185 @@ export interface ProjectUpdate {
   budget?: number | null;
   parent_id?: number;
   url?: string | null;  // #1155 — explicit null clears the URL
+  order_number?: string | null;  // explicit null clears it
+  waste_percent?: number | null;  // explicit null clears it
+}
+
+// Production cost estimate of a project ("Job")
+export interface CostTotals {
+  material: number;
+  energy: number;
+  bom: number;
+  total: number;
+}
+
+export interface CostMaterialRow {
+  type: string;
+  color: string;
+  color_name: string | null;
+  planned_grams: number;
+  completed_grams: number;
+  remaining_grams: number;
+  price_per_kg: number;
+  source: 'spools' | 'catalog' | 'default';
+  spools: Array<{ id: number; brand: string | null; color_name: string | null; cost_per_kg: number; remaining_grams: number }>;
+  planned_cost: number;
+  completed_cost: number;
+  remaining_cost: number;
+}
+
+export interface CostEnergyRow {
+  key: string;
+  kind: 'printer' | 'model' | 'unassigned';
+  label: string | null;
+  plates: number;
+  planned_hours: number;
+  remaining_hours: number;
+  kwh_per_hour: number | null;
+  source: 'power_setting' | 'history' | 'fleet_average' | 'none';
+  source_detail: string | null;
+  history_prints: number;
+  planned_kwh: number;
+  planned_cost: number;
+  remaining_cost: number;
+}
+
+export interface CostBomRow {
+  id: number;
+  name: string;
+  quantity_needed: number;
+  quantity_acquired: number;
+  unit_price: number;
+  cost: number;
+}
+
+export interface CostWarning {
+  code: 'unestimated_plates' | 'default_price' | 'no_energy_rate' | 'bom_without_price';
+  count?: number;
+  type?: string;
+  color?: string;
+  color_name?: string | null;
+}
+
+export interface ProjectCosts {
+  currency: string;
+  has_plan: boolean;
+  energy_cost_per_kwh: number;
+  waste_percent: number;
+  budget: number | null;
+  total_plates: number;
+  completed_plates: number;
+  planned: CostTotals;
+  incurred: CostTotals;
+  remaining: CostTotals;
+  material: { rows: CostMaterialRow[]; planned_grams: number; planned_cost: number; waste_cost: number; total_cost: number };
+  energy: { rows: CostEnergyRow[]; planned_kwh: number; planned_cost: number };
+  bom: { rows: CostBomRow[]; total: number; acquired: number };
+  actual: { material: number; energy: number; energy_kwh: number; prints: number };
+  warnings: CostWarning[];
+}
+
+// Project plan ("Job") — every plate a project needs
+export interface PlanFilament {
+  slot_id: number;
+  type: string;
+  color: string;  // #RRGGBB
+  color_name?: string | null;
+  used_grams?: number | null;  // per copy
+  original_type?: string | null;  // as sliced
+  original_color?: string | null;
+}
+
+export interface PlanItemProgress {
+  completed: number;
+  printing: number;
+  queued: number;
+  failed: number;
+  remaining: number;  // copies still to be queued
+  percent: number;
+}
+
+export interface PlanItem {
+  id: number;
+  project_id: number;
+  library_file_id: number | null;
+  library_file_name: string | null;
+  library_file_missing: boolean;
+  is_sliced: boolean;
+  thumbnail_url: string | null;
+  plate_id: number | null;
+  name: string;
+  group_label: string | null;
+  quantity: number;
+  filaments: PlanFilament[];
+  est_print_time_seconds: number | null;
+  est_filament_grams: number | null;
+  printer_id: number | null;
+  printer_name: string | null;
+  target_model: string | null;
+  notes: string | null;
+  sort_order: number;
+  progress: PlanItemProgress;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PlanItemCreate {
+  library_file_id?: number | null;
+  plate_id?: number | null;
+  name?: string;
+  group_label?: string | null;
+  quantity?: number;
+  filaments?: PlanFilament[];
+  est_print_time_seconds?: number | null;
+  est_filament_grams?: number | null;
+  printer_id?: number | null;
+  target_model?: string | null;
+  notes?: string | null;
+}
+
+export interface PlanItemUpdate {
+  plate_id?: number | null;
+  name?: string;
+  group_label?: string | null;
+  quantity?: number;
+  filaments?: PlanFilament[];
+  est_print_time_seconds?: number | null;
+  est_filament_grams?: number | null;
+  printer_id?: number | null;  // 0 / null clears
+  target_model?: string | null;  // '' / null clears
+  notes?: string | null;
+  sort_order?: number;
+}
+
+export interface PlanMaterialTotal {
+  type: string;
+  color: string;
+  color_name: string | null;
+  planned_grams: number;
+  completed_grams: number;
+  remaining_grams: number;
+}
+
+export interface PlanSummary {
+  total_plates: number;
+  completed_plates: number;
+  printing_plates: number;
+  queued_plates: number;
+  failed_plates: number;
+  remaining_plates: number;
+  progress_percent: number | null;
+  planned_print_time_seconds: number;
+  remaining_print_time_seconds: number;
+  planned_filament_grams: number;
+  remaining_filament_grams: number;
+  unestimated_items: number;
+  materials: PlanMaterialTotal[];
+}
+
+export interface PlanEnqueueResponse {
+  queued_total: number;
+  results: Array<{ plan_item_id: number; queued: number; error: string | null }>;
 }
 
 // BOM Types - Tracks sourced/purchased parts (hardware, electronics, etc.)
@@ -1065,6 +1308,7 @@ export type CameraViewMode = 'window' | 'embedded' | 'card';
 
 export interface AppSettings {
   auto_archive: boolean;
+  moonraker_archive_gcode_max_mb?: number;
   save_thumbnails: boolean;
   capture_finish_photo: boolean;
   default_filament_cost: number;
@@ -1076,6 +1320,7 @@ export interface AppSettings {
   include_beta_updates: boolean;
   language: string;
   notification_language: string;
+  progress_milestone_mode?: 'layers' | 'print_progress';
   // AMS threshold settings
   ams_humidity_good: number;  // <= this is green
   ams_humidity_fair: number;  // <= this is orange, > is red
@@ -1146,6 +1391,8 @@ export interface AppSettings {
   // MakerWorld import defaults
   makerworld_archive_details_default: boolean;
   makerworld_cover_thumbnail_default: boolean;
+  // GyroidVault integration toggle (read-only here; set via /gyroidvault/settings)
+  gyroidvault_enabled?: boolean;
   // Camera view settings
   camera_view_mode: CameraViewMode;
   // Preferred slicer
@@ -1192,6 +1439,8 @@ export interface AppSettings {
   ldap_group_mapping: string;
   ldap_auto_provision: boolean;
   ldap_default_group: string;
+  // Remember Me keeps users signed in for 30 days instead of 24 h
+  remember_me_extended_session?: boolean;
   obico_enabled: boolean;
   obico_ml_url: string;
   obico_sensitivity: 'low' | 'medium' | 'high';
@@ -1323,6 +1572,126 @@ export interface MakerworldRecentImport {
   created_at: string;
 }
 
+// GyroidVault integration (self-hosted model library). The backend reshapes
+// GyroidVault's payloads, so these mirror backend/app/schemas/gyroidvault.py.
+export interface GyroidVaultSettings {
+  enabled: boolean;
+  url: string;
+  has_api_key: boolean;
+  /** Add finished prints of imported models to their GyroidVault print history. */
+  report_prints: boolean;
+}
+
+export interface GyroidVaultSettingsUpdate {
+  enabled?: boolean;
+  report_prints?: boolean;
+  url?: string;
+  /** Empty string clears the stored key; omit to keep it. */
+  api_key?: string;
+}
+
+export interface GyroidVaultTestResult {
+  ok: boolean;
+  version: string | null;
+  username: string | null;
+  role: string | null;
+  supported_version: boolean;
+  warning: string | null;
+  error: string | null;
+}
+
+export interface GyroidVaultStatus {
+  enabled: boolean;
+  configured: boolean;
+  connected: boolean;
+  version: string | null;
+  supported_version: boolean;
+  error: string | null;
+}
+
+export interface GyroidVaultTag {
+  id: number;
+  name: string;
+}
+
+export interface GyroidVaultCategory {
+  id: number;
+  name: string;
+  color: string | null;
+  model_count: number;
+}
+
+export interface GyroidVaultModelSummary {
+  id: number;
+  name: string;
+  description: string;
+  category_id: number | null;
+  category_name: string | null;
+  category_color: string | null;
+  thumbnail_path: string | null;
+  file_count: number;
+  file_types: string[];
+  print_count: number;
+  tags: GyroidVaultTag[];
+  updated_at: string | null;
+}
+
+export interface GyroidVaultModelList {
+  models: GyroidVaultModelSummary[];
+  total_items: number;
+  total_pages: number;
+  page: number;
+  limit: number;
+}
+
+export interface GyroidVaultFile {
+  id: number;
+  filename: string;
+  file_type: string;
+  file_size: number;
+  importable: boolean;
+  imported_library_file_id: number | null;
+}
+
+export interface GyroidVaultModelDetail extends GyroidVaultModelSummary {
+  print_tips: string;
+  source_url: string | null;
+  web_url: string;
+  files: GyroidVaultFile[];
+}
+
+export interface GyroidVaultModelQuery {
+  search?: string;
+  category?: string;
+  tag?: string;
+  format?: string;
+  sort?: 'updated' | 'created' | 'name' | 'prints' | 'files';
+  page?: number;
+  limit?: number;
+}
+
+export interface GyroidVaultImportedFile {
+  gyroidvault_file_id: number;
+  library_file_id: number | null;
+  filename: string | null;
+  was_existing: boolean;
+  error: string | null;
+}
+
+export interface GyroidVaultImportResponse {
+  folder_id: number;
+  files: GyroidVaultImportedFile[];
+}
+
+export interface GyroidVaultRecentImport {
+  library_file_id: number;
+  filename: string;
+  folder_id: number | null;
+  thumbnail_path: string | null;
+  source_url: string | null;
+  created_at: string;
+}
+
 export interface SlicerSetting {
   setting_id: string;
   name: string;
@@ -1440,6 +1809,8 @@ export interface SliceRequest {
   // dispatch ignores the preset side when bundle is set).
   bundle?: SliceBundleSpec;
   plate?: number;
+  /** When plate=0, write one library/archive file per plate instead of one multi-plate 3MF. */
+  split_plates?: boolean;
   export_3mf?: boolean;
   // Build-plate override (#1337). When omitted, the slicer uses the process
   // preset's curr_bed_type as-is. Canonical values match BambuStudio /
@@ -1461,6 +1832,27 @@ export interface SlicerBundle {
   process: string[];
   filament: string[];
   version: string | null;
+}
+
+/** Safe, documented result of POST /settings/test-slicer-connection. */
+export interface SlicerConnectionTestResult {
+  success: boolean;
+  slicer: 'bambu_studio' | 'orcaslicer';
+  health: {
+    status?: string | null;
+    version?: string | null;
+    capabilities?: string[] | null;
+  } | null;
+  /** Slicer that actually answered, inferred from its version; null if unknown. */
+  detected_slicer?: 'bambu_studio' | 'orcaslicer' | null;
+  /** Why the test failed; `invalid_response` = the URL is not the slicer API. */
+  error?: 'unreachable' | 'invalid_response' | null;
+  /** Commit the sidecar reports; null when it reports none or "unknown". */
+  sidecar_revision?: string | null;
+  /** Commit this Printbuddy version expects. */
+  expected_sidecar_revision?: string;
+  /** false = other (or too old to report a) revision; null = cannot tell. */
+  sidecar_up_to_date?: boolean | null;
 }
 
 // GET /api/v1/slicer/presets — unified listing across cloud / local / standard.
@@ -1517,6 +1909,9 @@ export interface SliceResponse {
   filament_used_g: number;
   filament_used_mm: number;
   used_embedded_settings: boolean;
+  /** Present when split_plates wrote one file per plate. */
+  library_file_ids?: number[] | null;
+  names?: string[] | null;
 }
 
 export interface SliceArchiveResponse {
@@ -1526,6 +1921,8 @@ export interface SliceArchiveResponse {
   filament_used_g: number;
   filament_used_mm: number;
   used_embedded_settings: boolean;
+  archive_ids?: number[] | null;
+  names?: string[] | null;
 }
 
 // Background slice-job lifecycle. POST /slice returns 202 + this shape;
@@ -1968,6 +2365,9 @@ export interface PrintQueueItem {
   // Batch grouping
   batch_id?: number | null;
   batch_name?: string | null;
+  project_id?: number | null;
+  project_name?: string | null;
+  plan_item_id?: number | null;
   // Shortest-job-first scheduling
   been_jumped?: boolean;
   // Auto-print G-code injection
@@ -2069,6 +2469,24 @@ export interface PrintQueueBulkUpdate {
   use_ams?: boolean;
   // Auto-print G-code injection
   gcode_injection?: boolean;
+  // Project link (null unlinks)
+  project_id?: number | null;
+}
+
+export interface PrintQueueProjectLink {
+  item_ids: number[];
+  project_id: number | null;
+  add_to_plan?: boolean;
+  folder_id?: number | null;
+}
+
+export interface PrintQueueProjectLinkResponse {
+  updated_count: number;
+  skipped_count: number;
+  plan_items_created: number;
+  plan_items_linked: number;
+  library_files_created: number;
+  message: string;
 }
 
 export interface PrintQueueBulkUpdateResponse {
@@ -2171,7 +2589,7 @@ export interface Filament {
 }
 
 // Notification Provider types
-export type ProviderType = 'callmebot' | 'ntfy' | 'pushover' | 'telegram' | 'email' | 'discord' | 'webhook' | 'homeassistant' | 'notify';
+export type ProviderType = 'callmebot' | 'ntfy' | 'pushover' | 'telegram' | 'email' | 'discord' | 'webhook' | 'homeassistant' | 'notify' | 'printbuddy_app';
 
 export interface NotificationProvider {
   id: number;
@@ -2186,6 +2604,7 @@ export interface NotificationProvider {
   on_print_stopped: boolean;
   on_print_progress: boolean;
   on_print_almost_done: boolean;
+  attach_image?: boolean;
   on_print_missing_spool_assignment: boolean;
   // Printer status events
   on_printer_offline: boolean;
@@ -2246,6 +2665,7 @@ export interface NotificationProviderCreate {
   on_print_stopped?: boolean;
   on_print_progress?: boolean;
   on_print_almost_done?: boolean;
+  attach_image?: boolean;
   on_print_missing_spool_assignment?: boolean;
   // Printer status events
   on_printer_offline?: boolean;
@@ -2299,6 +2719,7 @@ export interface NotificationProviderUpdate {
   on_print_stopped?: boolean;
   on_print_progress?: boolean;
   on_print_almost_done?: boolean;
+  attach_image?: boolean;
   on_print_missing_spool_assignment?: boolean;
   // Printer status events
   on_printer_offline?: boolean;
@@ -2454,6 +2875,74 @@ export interface ObicoTestConnection {
   ok: boolean;
   status_code: number | null;
   body: string | null;
+  error: string | null;
+}
+
+// OctoEverywhere Gadget AI failure detection (PB-35). Mirrors
+// backend/app/schemas/octoeverywhere.py; the API key is write-only.
+export type OctoEverywhereSensitivity = 'low' | 'medium' | 'high';
+export type OctoEverywhereAction = 'notify' | 'pause' | 'pause_and_off';
+
+export interface OctoEverywhereSettings {
+  enabled: boolean;
+  has_api_key: boolean;
+  sensitivity: OctoEverywhereSensitivity;
+  action: OctoEverywhereAction;
+  /** 0 = automatic (Gadget's recommended interval), otherwise 5-120 seconds. */
+  poll_interval: number;
+  /** null = all connected printers */
+  enabled_printers: number[] | null;
+  notify_on_warning: boolean;
+}
+
+export interface OctoEverywhereSettingsUpdate {
+  enabled?: boolean;
+  /** New key; empty string clears it; omit to keep the stored key. */
+  api_key?: string;
+  sensitivity?: OctoEverywhereSensitivity;
+  action?: OctoEverywhereAction;
+  poll_interval?: number;
+  enabled_printers?: number[];
+  all_printers?: boolean;
+  notify_on_warning?: boolean;
+}
+
+export interface OctoEverywherePrinterStatus {
+  print_quality: number | null;
+  score: number | null;
+  warning: boolean;
+  pause: boolean;
+  frame_count: number;
+  last_checked: string | null;
+  next_check_in: number | null;
+  using_fallback: boolean;
+  stopped_reason: string | null;
+  last_issue: string | null;
+}
+
+export interface OctoEverywhereDetectionEvent {
+  printer_id: number;
+  task_name: string;
+  timestamp: string;
+  print_quality: number | null;
+  score: number | null;
+  warning: boolean;
+  pause: boolean;
+}
+
+export interface OctoEverywhereStatus {
+  is_running: boolean;
+  last_error: string | null;
+  account_error: string | null;
+  per_printer: Record<string, OctoEverywherePrinterStatus>;
+  history: OctoEverywhereDetectionEvent[];
+  enabled: boolean;
+  has_api_key: boolean;
+}
+
+export interface OctoEverywhereTestResult {
+  ok: boolean;
+  error_type: string | null;
   error: string | null;
 }
 
@@ -3162,6 +3651,9 @@ export interface UserEmailPreferences {
 export interface LoginRequest {
   username: string;
   password: string;
+  // Requests a 30-day token; the backend only honours it when the admin
+  // enabled remember_me_extended_session.
+  remember_me?: boolean;
 }
 
 export interface LoginResponse {
@@ -3264,6 +3756,7 @@ export interface TwoFAVerifyRequest {
   pre_auth_token: string;
   code: string;
   method: 'totp' | 'email' | 'backup';
+  remember_me?: boolean;
 }
 
 /**
@@ -3386,6 +3879,122 @@ export interface AuthStatus {
 }
 
 // API functions
+// User-reported failure reasons ("Report failed print"). Separate from the
+// automatic failure_reason used by the Failure Analysis widget.
+export interface CustomFailureMaterial {
+  type: string | null;
+  color: string | null;
+  grams: number | null;
+}
+
+export interface CustomFailureReport {
+  id: number;
+  custom_failure_reason: string;
+  comment: string | null;
+  reported_by: string | null;
+  reported_at: string | null;
+  printer_id: number | null;
+  printer_name: string | null;
+  archive_id: number | null;
+  print_name: string | null;
+  filename: string | null;
+  print_status: string | null;
+  print_started_at: string | null;
+  print_date: string | null;
+  materials: CustomFailureMaterial[];
+  filament_used_grams: number | null;
+  print_time_seconds: number | null;
+  has_thumbnail: boolean;
+  /**
+   * manual = a person picked the reason; auto = derived from Printbuddy's automatic data, unconfirmed;
+   * imported = taken over from a reason picked in Printbuddy's Edit Archive dialog
+   */
+  source: CustomFailureSource;
+  /** failure_reason text Printbuddy had recorded for this print */
+  original_reason: string | null;
+  hms_code: string | null;
+  hms_description: string | null;
+  /** how far the print got when it stopped / failed (0-100); null = unknown */
+  progress_percent: number | null;
+}
+
+export type CustomFailureSource = 'manual' | 'auto' | 'imported';
+/** Statistics filter: person = manual + imported, automatic = auto */
+export type CustomFailureSourceFilter = 'person' | 'automatic';
+
+export interface CustomFailureSuggestion {
+  reason: string;
+  hms_code: string;
+  hms_description: string | null;
+}
+
+export interface CustomFailureReportTarget {
+  printer_id: number;
+  printer_name: string;
+  is_current_print: boolean;
+  archive_id: number;
+  print_name: string | null;
+  filename: string | null;
+  print_status: string | null;
+  print_started_at: string | null;
+  has_thumbnail: boolean;
+  existing_report: CustomFailureReport | null;
+  /** reason pre-selected from the printer's current error code */
+  suggestion: CustomFailureSuggestion | null;
+}
+
+export interface CustomFailureReasonStats {
+  reason: string;
+  count: number;
+  percent: number;
+  latest: CustomFailureReport[];
+}
+
+export interface CustomFailureStats {
+  total: number;
+  /** automatically detected reports in the date range, regardless of the source filter */
+  automatic_total: number;
+  latest_limit: number;
+  reasons: CustomFailureReasonStats[];
+}
+
+export interface CustomFailureReason {
+  id: number;
+  code: string;
+  /** null on a default reason = use the translated default text */
+  title: string | null;
+  subtitle: string | null;
+  /** built-in icon name (lucide) */
+  icon: string | null;
+  /** uploaded image, shown instead of the built-in icon */
+  custom_icon_filename: string | null;
+  is_system: boolean;
+  is_hidden: boolean;
+  sort_order: number;
+}
+
+export interface CustomFailureReasonInput {
+  title?: string | null;
+  subtitle?: string | null;
+  icon?: string | null;
+  is_hidden?: boolean;
+}
+
+export interface CustomFailureReportInput {
+  custom_failure_reason: string;
+  comment?: string | null;
+  reported_by?: string | null;
+}
+
+function customFailureQuery(params: Record<string, string | undefined>): string {
+  const search = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => {
+    if (value) search.set(key, value);
+  });
+  const qs = search.toString();
+  return qs ? `?${qs}` : '';
+}
+
 export const api = {
   // Authentication
   getAuthStatus: () => request<AuthStatus>('/auth/status'),
@@ -3549,10 +4158,10 @@ export const api = {
     request<{ auth_url: string }>(`/auth/oidc/authorize/${providerId}`),
 
   // OIDC exchange token for JWT
-  exchangeOIDCToken: (oidcToken: string) =>
+  exchangeOIDCToken: (oidcToken: string, rememberMe = false) =>
     request<LoginResponse>('/auth/oidc/exchange', {
       method: 'POST',
-      body: JSON.stringify({ oidc_token: oidcToken }),
+      body: JSON.stringify({ oidc_token: oidcToken, remember_me: rememberMe }),
     }),
 
   // OIDC links for current user
@@ -3640,6 +4249,21 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
+  getPrinterCustomImageUrl: (id: number, filename: string) =>
+    withStreamToken(`${API_BASE}/printers/${id}/image?v=${encodeURIComponent(filename)}`),
+  uploadPrinterImage: async (id: number, file: File): Promise<Printer> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const headers: Record<string, string> = {};
+    if (authToken) headers.Authorization = `Bearer ${authToken}`;
+    const response = await fetch(`${API_BASE}/printers/${id}/image`, { method: 'POST', headers, body: formData });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || `HTTP ${response.status}`);
+    }
+    return response.json();
+  },
+  deletePrinterImage: (id: number) => request<Printer>(`/printers/${id}/image`, { method: 'DELETE' }),
   updatePrinter: (id: number, data: Partial<PrinterCreate>) =>
     request<Printer>(`/printers/${id}`, {
       method: 'PATCH',
@@ -3743,6 +4367,11 @@ export const api = {
   setBedTemperature: (printerId: number, target: number) =>
     request<{ success: boolean; message: string }>(
       `/printers/${printerId}/temperature/bed?target=${target}`,
+      { method: 'POST' }
+    ),
+  setChamberTemperature: (printerId: number, target: number) =>
+    request<{ success: boolean; message: string }>(
+      `/printers/${printerId}/temperature/chamber?target=${target}`,
       { method: 'POST' }
     ),
   homeAxes: (printerId: number, axes: 'x' | 'y' | 'z' | 'xy' | 'all' = 'all') =>
@@ -4170,6 +4799,74 @@ export const api = {
     const qs = params.toString();
     return request<FailureAnalysis>(`/archives/analysis/failures${qs ? `?${qs}` : ''}`);
   },
+  // Custom failure reports ("Report failed print" / "Fail reason statistics")
+  getCustomFailureReasons: (options?: { includeHidden?: boolean }) =>
+    request<CustomFailureReason[]>(
+      `/custom-failure-reports/reasons/${options?.includeHidden ? '?include_hidden=true' : ''}`
+    ),
+  createCustomFailureReason: (data: CustomFailureReasonInput & { title: string }) =>
+    request<CustomFailureReason>('/custom-failure-reports/reasons/', { method: 'POST', body: JSON.stringify(data) }),
+  updateCustomFailureReason: (id: number, data: CustomFailureReasonInput) =>
+    request<CustomFailureReason>(`/custom-failure-reports/reasons/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+  deleteCustomFailureReason: (id: number) =>
+    request<{ status: 'hidden' | 'deleted' }>(`/custom-failure-reports/reasons/${id}`, { method: 'DELETE' }),
+  restoreDefaultCustomFailureReasons: () =>
+    request<{ restored: number }>('/custom-failure-reports/reasons/restore-defaults', { method: 'POST' }),
+  reorderCustomFailureReasons: (ids: number[]) =>
+    request<CustomFailureReason[]>('/custom-failure-reports/reasons/order', {
+      method: 'PUT',
+      body: JSON.stringify({ ids }),
+    }),
+  getCustomFailureReasonIconUrl: (id: number, filename: string) =>
+    withStreamToken(`${API_BASE}/custom-failure-reports/reasons/${id}/icon?v=${encodeURIComponent(filename)}`),
+  uploadCustomFailureReasonIcon: async (id: number, file: File): Promise<CustomFailureReason> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const headers: Record<string, string> = {};
+    if (authToken) headers.Authorization = `Bearer ${authToken}`;
+    const response = await fetch(`${API_BASE}/custom-failure-reports/reasons/${id}/icon`, {
+      method: 'POST',
+      headers,
+      body: formData,
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || `HTTP ${response.status}`);
+    }
+    return response.json();
+  },
+  deleteCustomFailureReasonIcon: (id: number) =>
+    request<CustomFailureReason>(`/custom-failure-reports/reasons/${id}/icon`, { method: 'DELETE' }),
+  getCustomFailureReportTarget: (printerId: number) =>
+    request<CustomFailureReportTarget>(`/custom-failure-reports/printers/${printerId}/target`),
+  createCustomFailureReport: (data: CustomFailureReportInput & { printer_id: number; archive_id: number }) =>
+    request<CustomFailureReport>('/custom-failure-reports/', { method: 'POST', body: JSON.stringify(data) }),
+  updateCustomFailureReport: (id: number, data: Partial<CustomFailureReportInput>) =>
+    request<CustomFailureReport>(`/custom-failure-reports/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  deleteCustomFailureReport: (id: number) =>
+    request<{ status: string }>(`/custom-failure-reports/${id}`, { method: 'DELETE' }),
+  getCustomFailureStats: (options?: {
+    dateFrom?: string;
+    dateTo?: string;
+    source?: CustomFailureSourceFilter;
+    printerId?: number;
+  }) =>
+    request<CustomFailureStats>(
+      `/custom-failure-reports/stats${customFailureQuery({ date_from: options?.dateFrom, date_to: options?.dateTo, source: options?.source, printer_id: options?.printerId?.toString() })}`
+    ),
+  getCustomFailureReports: (options?: {
+    reason?: string;
+    dateFrom?: string;
+    dateTo?: string;
+    source?: CustomFailureSourceFilter;
+    printerId?: number;
+  }) =>
+    request<CustomFailureReport[]>(
+      `/custom-failure-reports/${customFailureQuery({ reason: options?.reason, date_from: options?.dateFrom, date_to: options?.dateTo, source: options?.source, printer_id: options?.printerId?.toString() })}`
+    ),
   compareArchives: (archiveIds: number[]) =>
     request<ArchiveComparison>(`/archives/compare?archive_ids=${archiveIds.join(',')}`),
   findSimilarArchives: (archiveId: number, limit = 10) =>
@@ -4727,6 +5424,8 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(data),
     }),
+  testSlicerConnection: () =>
+    request<SlicerConnectionTestResult>('/settings/test-slicer-connection', { method: 'POST' }),
   getMQTTStatus: () => request<MQTTStatus>('/settings/mqtt/status'),
   getPandaBreathStatus: () => request<PandaBreathStatus>('/settings/panda-breath/status'),
   sendPandaBreathCommand: (data: { command: string; value?: string | number | boolean | null; device_id?: string | null }) =>
@@ -4851,6 +5550,40 @@ export const api = {
         use_cover_as_thumbnail,
       }),
     }),
+
+  // GyroidVault (self-hosted model library) browse + import.
+  getGyroidVaultSettings: () => request<GyroidVaultSettings>('/gyroidvault/settings'),
+  updateGyroidVaultSettings: (data: GyroidVaultSettingsUpdate) =>
+    request<GyroidVaultSettings>('/gyroidvault/settings', {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+  testGyroidVaultConnection: (data: { url?: string; api_key?: string; report_prints?: boolean } = {}) =>
+    request<GyroidVaultTestResult>('/gyroidvault/test', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  getGyroidVaultStatus: () => request<GyroidVaultStatus>('/gyroidvault/status'),
+  getGyroidVaultModels: (query: GyroidVaultModelQuery = {}) => {
+    const params = new URLSearchParams();
+    Object.entries(query).forEach(([key, value]) => {
+      if (value !== undefined && value !== null && value !== '') params.set(key, String(value));
+    });
+    const qs = params.toString();
+    return request<GyroidVaultModelList>(`/gyroidvault/models${qs ? `?${qs}` : ''}`);
+  },
+  getGyroidVaultModel: (modelId: number) => request<GyroidVaultModelDetail>(`/gyroidvault/models/${modelId}`),
+  getGyroidVaultCategories: () => request<GyroidVaultCategory[]>('/gyroidvault/categories'),
+  getGyroidVaultTags: () => request<GyroidVaultTag[]>('/gyroidvault/tags'),
+  getGyroidVaultAssetUrl: (path: string) =>
+    withStreamToken(`${API_BASE}/gyroidvault/asset?path=${encodeURIComponent(path)}`),
+  importGyroidVaultFiles: (model_id: number, file_ids: number[], folder_id?: number | null) =>
+    request<GyroidVaultImportResponse>('/gyroidvault/import', {
+      method: 'POST',
+      body: JSON.stringify({ model_id, file_ids, folder_id: folder_id ?? null }),
+    }),
+  getGyroidVaultRecentImports: (limit = 10) =>
+    request<GyroidVaultRecentImport[]>(`/gyroidvault/recent-imports?limit=${limit}`),
   getCloudSettingDetail: (settingId: string) =>
     request<SlicerSettingDetail>(`/cloud/settings/${settingId}`),
   createCloudSetting: (data: SlicerSettingCreate) =>
@@ -4990,6 +5723,11 @@ export const api = {
   bulkUpdateQueue: (data: PrintQueueBulkUpdate) =>
     request<PrintQueueBulkUpdateResponse>('/queue/bulk', {
       method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+  linkQueueItemsToProject: (data: PrintQueueProjectLink) =>
+    request<PrintQueueProjectLinkResponse>('/queue/project-link', {
+      method: 'POST',
       body: JSON.stringify(data),
     }),
   // Batches
@@ -5853,6 +6591,38 @@ export const api = {
       method: 'DELETE',
     }),
 
+  // Production cost estimate
+  getProjectCosts: (projectId: number) =>
+    request<ProjectCosts>(`/projects/${projectId}/costs`),
+
+  // Project plan ("Job")
+  getProjectPlan: (projectId: number) =>
+    request<PlanItem[]>(`/projects/${projectId}/plan`),
+  getProjectPlanSummary: (projectId: number) =>
+    request<PlanSummary>(`/projects/${projectId}/plan/summary`),
+  createPlanItem: (projectId: number, data: PlanItemCreate) =>
+    request<PlanItem>(`/projects/${projectId}/plan`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  updatePlanItem: (projectId: number, itemId: number, data: PlanItemUpdate) =>
+    request<PlanItem>(`/projects/${projectId}/plan/${itemId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+  deletePlanItem: (projectId: number, itemId: number) =>
+    request<{ message: string }>(`/projects/${projectId}/plan/${itemId}`, { method: 'DELETE' }),
+  reorderPlanItems: (projectId: number, itemIds: number[]) =>
+    request<{ message: string }>(`/projects/${projectId}/plan/reorder`, {
+      method: 'POST',
+      body: JSON.stringify({ item_ids: itemIds }),
+    }),
+  enqueueProjectPlan: (projectId: number, itemIds?: number[], manualStart = false) =>
+    request<PlanEnqueueResponse>(`/projects/${projectId}/plan/enqueue`, {
+      method: 'POST',
+      body: JSON.stringify({ item_ids: itemIds ?? null, manual_start: manualStart }),
+    }),
+
   // Templates
   getTemplates: () => request<ProjectListItem[]>('/projects/templates/'),
   createTemplateFromProject: (projectId: number) =>
@@ -6305,6 +7075,20 @@ export const api = {
     request<ObicoTestConnection>('/obico/test-connection', {
       method: 'POST',
       body: JSON.stringify({ url }),
+    }),
+
+  // OctoEverywhere Gadget AI failure detection (PB-35)
+  getOctoEverywhereSettings: () => request<OctoEverywhereSettings>('/octoeverywhere/settings'),
+  updateOctoEverywhereSettings: (data: OctoEverywhereSettingsUpdate) =>
+    request<OctoEverywhereSettings>('/octoeverywhere/settings', {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+  getOctoEverywhereStatus: () => request<OctoEverywhereStatus>('/octoeverywhere/status'),
+  testOctoEverywhereConnection: (apiKey?: string) =>
+    request<OctoEverywhereTestResult>('/octoeverywhere/test-connection', {
+      method: 'POST',
+      body: JSON.stringify(apiKey ? { api_key: apiKey } : {}),
     }),
 
   // Slicer API — slice in the background. Both endpoints return 202 + a
@@ -6795,6 +7579,7 @@ export interface DiscoveryInfo {
   ssdp_running: boolean;
   scan_running: boolean;
   moonraker_scan_running?: boolean;
+  octoprint_scan_running?: boolean;
   subnets: string[];
 }
 
@@ -6846,6 +7631,22 @@ export const discoveryApi = {
 
   getDiscoveredMoonrakerPrinters: () =>
     request<DiscoveredPrinter[]>('/discovery/moonraker/printers'),
+
+  // OctoPrint subnet scanning
+  startOctoPrintSubnetScan: (subnet: string, timeout: number = 1.0, ports?: number[]) =>
+    request<SubnetScanStatus>('/discovery/octoprint/scan', {
+      method: 'POST',
+      body: JSON.stringify({ subnet, timeout, ports }),
+    }),
+
+  getOctoPrintScanStatus: () =>
+    request<SubnetScanStatus>('/discovery/octoprint/scan/status'),
+
+  stopOctoPrintSubnetScan: () =>
+    request<SubnetScanStatus>('/discovery/octoprint/scan/stop', { method: 'POST' }),
+
+  getDiscoveredOctoPrintPrinters: () =>
+    request<DiscoveredPrinter[]>('/discovery/octoprint/printers'),
 };
 
 // Virtual Printer types
@@ -6949,10 +7750,14 @@ export const virtualPrinterApi = {
 };
 
 // Multi Virtual Printer API
+export type VirtualPrinterProtocol = 'bambu' | 'moonraker';
+
 export interface VirtualPrinterConfig {
   id: number;
   name: string;
   enabled: boolean;
+  /** 'bambu' emulates a Bambu printer; 'moonraker' is an OctoPrint/Moonraker-compatible upload endpoint (#52). */
+  protocol: VirtualPrinterProtocol;
   mode: VirtualPrinterMode;
   model: string | null;
   model_name: string | null;
@@ -6961,11 +7766,17 @@ export interface VirtualPrinterConfig {
   target_printer_id: number | null;
   auto_dispatch: boolean;
   queue_force_color_match: boolean;
+  /** Project every upload of this VP is linked to (null = none). */
+  default_project_id?: number | null;
   tailscale_disabled: boolean;
   bind_ip: string | null;
   remote_interface_ip: string | null;
   position: number;
   status: { running: boolean; pending_files: number; proxy?: VirtualPrinterProxyStatus };
+  /** Moonraker-compatible VPs only: key the slicer sends as X-Api-Key. */
+  api_key: string | null;
+  /** Moonraker-compatible VPs only: path to append to the Printbuddy origin for the slicer host URL. */
+  host_path: string | null;
 }
 
 export interface VirtualPrinterListResponse {
@@ -6981,12 +7792,14 @@ export const multiVirtualPrinterApi = {
   create: (data: {
     name?: string;
     enabled?: boolean;
+    protocol?: VirtualPrinterProtocol;
     mode?: string;
     model?: string;
     access_code?: string;
     target_printer_id?: number;
     auto_dispatch?: boolean;
     queue_force_color_match?: boolean;
+    default_project_id?: number | null;
     bind_ip?: string;
     remote_interface_ip?: string;
   }) =>
@@ -7004,6 +7817,7 @@ export const multiVirtualPrinterApi = {
     target_printer_id?: number;
     auto_dispatch?: boolean;
     queue_force_color_match?: boolean;
+    default_project_id?: number | null;
     tailscale_disabled?: boolean;
     bind_ip?: string;
     remote_interface_ip?: string;
@@ -7026,6 +7840,11 @@ export const multiVirtualPrinterApi = {
 
   diagnose: (id: number) =>
     request<VPDiagnosticResult>(`/virtual-printers/${id}/diagnostic`),
+
+  regenerateApiKey: (id: number) =>
+    request<VirtualPrinterConfig>(`/virtual-printers/${id}/api-key`, {
+      method: 'POST',
+    }),
 };
 
 /** The shared CA certificate every virtual printer presents — imported once
@@ -7048,7 +7867,13 @@ export interface VPDiagnosticCheck {
     | 'port_ftps'
     | 'port_mqtt'
     | 'port_bind'
-    | 'certificate';
+    | 'certificate'
+    // Moonraker/OctoPrint-compatible VPs (#52)
+    | 'mr_enabled'
+    | 'mr_endpoint'
+    | 'mr_api_key'
+    | 'mr_target_printer'
+    | 'mr_upload_dir';
   status: VPDiagnosticStatus;
   params: Record<string, string | number>;
 }
@@ -7078,7 +7903,7 @@ export const pendingUploadsApi = {
 
   get: (id: number) => request<PendingUpload>(`/pending-uploads/${id}`),
 
-  archive: (id: number, data?: { tags?: string; notes?: string; project_id?: number }) =>
+  archive: (id: number, data?: { tags?: string; notes?: string; project_id?: number | null }) =>
     request<{ id: number; print_name: string; filename: string }>(`/pending-uploads/${id}/archive`, {
       method: 'POST',
       body: JSON.stringify(data || {}),

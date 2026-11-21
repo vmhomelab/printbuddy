@@ -25,12 +25,13 @@ import {
   X,
 } from 'lucide-react';
 import { api } from '../api/client';
-import type { ProjectListItem, ProjectCreate, ProjectUpdate, ProjectImport, Permission } from '../api/client';
+import type { ProjectListItem, ProjectCreate, ProjectUpdate, ProjectImport, Permission, LibraryFolderTree } from '../api/client';
 import { Button } from '../components/Button';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { getCurrencySymbol } from '../utils/currency';
+import { CostMiniBar } from '../components/ProjectCostsCard';
 
 const PROJECT_COLORS = [
   '#ef4444', // red
@@ -45,6 +46,11 @@ const PROJECT_COLORS = [
 ];
 
 type TFunction = (key: string, options?: Record<string, unknown>) => string;
+
+// Flatten the File Manager folder tree into indented select options
+function flattenFolderTree(folders: LibraryFolderTree[], depth = 0): Array<{ folder: LibraryFolderTree; depth: number }> {
+  return folders.flatMap((folder) => [{ folder, depth }, ...flattenFolderTree(folder.children || [], depth + 1)]);
+}
 
 interface ProjectModalProps {
   project?: ProjectListItem;
@@ -67,6 +73,16 @@ export function ProjectModal({ project, onClose, onSave, isLoading, currencySymb
   const [priority, setPriority] = useState((project as ProjectListItem & { priority?: string })?.priority || 'normal');
   const [budget, setBudget] = useState(project?.budget?.toString() || '');
   const [url, setUrl] = useState(project?.url || '');
+  const [orderNumber, setOrderNumber] = useState(project?.order_number || '');
+  // Optional File Manager folder to link when creating a project
+  const [linkFolderId, setLinkFolderId] = useState('');
+  const { data: folderTree } = useQuery({
+    queryKey: ['library-folders'],
+    queryFn: () => api.getLibraryFolders(),
+    enabled: !project,
+  });
+  const folderOptions = flattenFolderTree(folderTree || []);
+  const selectedFolder = folderOptions.find((o) => String(o.folder.id) === linkFolderId)?.folder;
   const [urlError, setUrlError] = useState<string | null>(null);
   const queryClient = useQueryClient();
   const [coverImageFilename, setCoverImageFilename] = useState(project?.cover_image_filename || null);
@@ -128,6 +144,8 @@ export function ProjectModal({ project, onClose, onSave, isLoading, currencySymb
       // http(s) prefix validator. Use undefined for create (omit) and null for
       // edit-with-cleared-value.
       url: project ? (trimmedUrl || null) : (trimmedUrl || undefined),
+      order_number: project ? (orderNumber.trim() || null) : (orderNumber.trim() || undefined),
+      ...(!project && linkFolderId && { folder_ids: [Number(linkFolderId)] }),
       ...(project && { status }),
     });
   };
@@ -166,6 +184,51 @@ export function ProjectModal({ project, onClose, onSave, isLoading, currencySymb
               className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-3 py-2 text-white placeholder-bambu-gray focus:outline-none focus:border-bambu-green resize-none"
               placeholder={t('projects.descriptionPlaceholder')}
               rows={2}
+            />
+          </div>
+
+          {/* Optional: link a File Manager folder right away (create only;
+              existing projects link folders from the File Manager) */}
+          {!project && (
+            <div>
+              <label className="block text-sm font-medium text-white mb-1" htmlFor="project-link-folder">
+                {t('projects.linkFolderLabel')}
+              </label>
+              <select
+                id="project-link-folder"
+                value={linkFolderId}
+                onChange={(e) => setLinkFolderId(e.target.value)}
+                className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-3 py-2 text-white focus:outline-none focus:border-bambu-green"
+              >
+                <option value="">{t('projects.linkFolderNone')}</option>
+                {folderOptions.map(({ folder, depth }) => (
+                  <option key={folder.id} value={folder.id}>
+                    {`${'\u00A0\u00A0'.repeat(depth)}${depth > 0 ? '└ ' : ''}${folder.name} (${folder.file_count})${
+                      folder.project_name ? ` · ${t('projects.linkFolderLinkedTo', { name: folder.project_name })}` : ''
+                    }`}
+                  </option>
+                ))}
+              </select>
+              {selectedFolder?.project_name ? (
+                <p className="text-xs text-yellow-400 mt-1">{t('projects.linkFolderMoveHint', { name: selectedFolder.project_name })}</p>
+              ) : (
+                <p className="text-xs text-bambu-gray mt-1">{t('projects.linkFolderHint')}</p>
+              )}
+            </div>
+          )}
+
+          {/* Order / tracking number (e.g. Etsy order) for print jobs */}
+          <div>
+            <label className="block text-sm font-medium text-white mb-1">
+              {t('projects.orderNumberLabel')}
+            </label>
+            <input
+              type="text"
+              value={orderNumber}
+              onChange={(e) => setOrderNumber(e.target.value)}
+              className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-3 py-2 text-white placeholder-bambu-gray focus:outline-none focus:border-bambu-green"
+              placeholder={t('projects.orderNumberPlaceholder')}
+              maxLength={100}
             />
           </div>
 
@@ -486,10 +549,11 @@ interface ProjectCardProps {
   onEdit: () => void;
   onDelete: () => void;
   hasPermission: (permission: Permission) => boolean;
+  currencySymbol: string;
   t: TFunction;
 }
 
-function ProjectCard({ project, onClick, onEdit, onDelete, hasPermission, t }: ProjectCardProps) {
+function ProjectCard({ project, onClick, onEdit, onDelete, hasPermission, currencySymbol, t }: ProjectCardProps) {
   // Plates progress: archive_count / target_count
   const platesProgressPercent = project.target_count
     ? Math.round((project.archive_count / project.target_count) * 100)
@@ -498,6 +562,10 @@ function ProjectCard({ project, onClick, onEdit, onDelete, hasPermission, t }: P
   const partsProgressPercent = project.target_parts_count
     ? Math.round((project.completed_count / project.target_parts_count) * 100)
     : 0;
+  // Job plan progress: completed plates / planned plates
+  const planTotal = project.plan_total_plates ?? 0;
+  const planCompleted = project.plan_completed_plates ?? 0;
+  const planProgressPercent = planTotal > 0 ? Math.round((planCompleted / planTotal) * 100) : 0;
   const isCompleted = project.status === 'completed';
   const isArchived = project.status === 'archived';
   const [showActions, setShowActions] = useState(false);
@@ -562,7 +630,20 @@ function ProjectCard({ project, onClick, onEdit, onDelete, hasPermission, t }: P
                     <ExternalLink className="w-3.5 h-3.5" />
                   </a>
                 )}
-                {project.target_parts_count ? (
+                {project.order_number && (
+                  <span className="text-xs px-2 py-0.5 rounded-full whitespace-nowrap bg-bambu-dark text-bambu-gray-light" title={t('projects.orderNumberLabel')}>
+                    #{project.order_number}
+                  </span>
+                )}
+                {planTotal > 0 ? (
+                  <span className={`text-xs px-2 py-0.5 rounded-full whitespace-nowrap font-medium ${
+                    planProgressPercent >= 100
+                      ? 'bg-bambu-green/20 text-bambu-green'
+                      : 'bg-bambu-dark text-bambu-gray'
+                  }`}>
+                    {planCompleted}/{planTotal} {t('projects.plates')}
+                  </span>
+                ) : project.target_parts_count ? (
                   <span className={`text-xs px-2 py-0.5 rounded-full whitespace-nowrap font-medium ${
                     partsProgressPercent >= 100
                       ? 'bg-bambu-green/20 text-bambu-green'
@@ -686,8 +767,41 @@ function ProjectCard({ project, onClick, onEdit, onDelete, hasPermission, t }: P
           </div>
         </div>
 
+        {/* Expected production cost (material / energy / BOM) */}
+        {project.estimated_costs && project.estimated_costs.total > 0 && (
+          <div
+            className="mb-3 inline-flex max-w-full items-center gap-2 rounded-md border border-bambu-dark-tertiary bg-bambu-dark px-2 py-1 text-xs"
+            title={`${t('projectCosts.material')}: ${currencySymbol}${project.estimated_costs.material.toFixed(2)} · ${t('projectCosts.energy')}: ${currencySymbol}${project.estimated_costs.energy.toFixed(2)} · ${t('projectCosts.bom')}: ${currencySymbol}${project.estimated_costs.bom.toFixed(2)}`}
+          >
+            <span className="whitespace-nowrap font-semibold text-white">≈ {currencySymbol}{project.estimated_costs.total.toFixed(2)}</span>
+            <CostMiniBar totals={project.estimated_costs} />
+            <span className="truncate text-bambu-gray">{t('projects.estimatedCost')}</span>
+          </div>
+        )}
+
         {/* Progress section - show for all projects */}
         <div className="mb-4">
+          {planTotal > 0 && (
+            <div className="mb-3">
+              <div className="flex items-center justify-between text-xs mb-1">
+                <span className="text-bambu-gray">{t('projects.jobProgress')}</span>
+                <span className={planProgressPercent >= 100 ? 'text-bambu-green font-medium' : 'text-white'}>
+                  {planCompleted} / {planTotal} · {planProgressPercent}%
+                </span>
+              </div>
+              <div className="h-2 bg-bambu-dark/80 rounded-full overflow-hidden backdrop-blur-sm">
+                <div
+                  className="h-full transition-all duration-500 ease-out rounded-full"
+                  style={{
+                    width: `${Math.min(planProgressPercent, 100)}%`,
+                    background: planProgressPercent >= 100
+                      ? 'linear-gradient(90deg, #22c55e, #4ade80)'
+                      : `linear-gradient(90deg, ${project.color || '#6b7280'}, ${project.color || '#6b7280'}cc)`,
+                  }}
+                />
+              </div>
+            </div>
+          )}
           {(project.target_count || project.target_parts_count) ? (
             <div className="space-y-3">
               {/* Plates progress */}
@@ -864,8 +978,11 @@ export function ProjectsPage() {
 
   const createMutation = useMutation({
     mutationFn: (data: ProjectCreate) => api.createProject(data),
-    onSuccess: () => {
+    onSuccess: (_project, data) => {
       queryClient.invalidateQueries({ queryKey: ['projects'] });
+      if (data.folder_ids?.length) {
+        queryClient.invalidateQueries({ queryKey: ['library-folders'] });
+      }
       setShowModal(false);
       showToast(t('projects.toast.created'), 'success');
     },
@@ -1139,6 +1256,7 @@ export function ProjectsPage() {
               onEdit={() => handleEdit(project)}
               onDelete={() => handleDeleteClick(project.id)}
               hasPermission={hasPermission}
+              currencySymbol={currencySymbol}
               t={t}
             />
           ))}

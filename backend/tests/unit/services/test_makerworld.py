@@ -183,6 +183,35 @@ class TestGetDesign:
         assert "members" in str(exc_info.value)
 
     @pytest.mark.asyncio
+    async def test_403_with_token_retries_anonymously(self):
+        """A refused Bambu Cloud token must not block public metadata."""
+        svc = MakerWorldService(client=MagicMock(spec=httpx.AsyncClient), auth_token="tok")
+        forbidden = MagicMock()
+        forbidden.status_code = 403
+        forbidden.json.return_value = {"error": "The client does not have access rights to the content."}
+        ok = MagicMock()
+        ok.status_code = 200
+        ok.json.return_value = {"id": 1}
+        svc._client.get = AsyncMock(side_effect=[forbidden, ok])
+
+        assert await svc.get_design(1) == {"id": 1}
+        first, second = svc._client.get.call_args_list
+        assert first.kwargs["headers"]["Authorization"] == "Bearer tok"
+        assert "Authorization" not in second.kwargs["headers"]
+
+    @pytest.mark.asyncio
+    async def test_403_anonymous_retry_still_forbidden_raises(self):
+        svc = MakerWorldService(client=MagicMock(spec=httpx.AsyncClient), auth_token="tok")
+        forbidden = MagicMock()
+        forbidden.status_code = 403
+        forbidden.json.return_value = {"error": "This model is only available to members"}
+        svc._client.get = AsyncMock(return_value=forbidden)
+
+        with pytest.raises(MakerWorldForbiddenError, match="members"):
+            await svc.get_design(1)
+        assert svc._client.get.await_count == 2
+
+    @pytest.mark.asyncio
     async def test_maps_5xx_to_unavailable(self, service):
         resp = MagicMock()
         resp.status_code = 503
@@ -259,6 +288,27 @@ class TestGetProfileDownload:
         assert url == "https://api.bambulab.com/v1/iot-service/api/user/profile/1452154"
         assert call.kwargs["headers"]["Authorization"] == "Bearer tok-abc"
         assert call.kwargs["params"] == {"model_id": "US2bb73b106683e5"}
+
+    @pytest.mark.asyncio
+    async def test_instance_download_sends_bearer_and_download_query(self):
+        """The per-instance endpoint must use the existing Cloud bearer."""
+        svc = self._make_service(auth_token="tok-abc")
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = {
+            "name": "benchy.3mf",
+            "url": "https://makerworld.bblmw.com/makerworld/model/X/Y/f.3mf?exp=1&key=k",
+        }
+        svc._client.get.return_value = resp
+
+        manifest = await svc.get_instance_download(4028000)
+
+        assert manifest["name"] == "benchy.3mf"
+        call = svc._client.get.call_args
+        url = call.args[0] if call.args else call.kwargs.get("url")
+        assert url == "https://api.bambulab.com/v1/design-service/instance/4028000/f3mf"
+        assert call.kwargs["headers"]["Authorization"] == "Bearer tok-abc"
+        assert call.kwargs["params"] == {"type": "download"}
 
     @pytest.mark.asyncio
     async def test_maps_401_to_auth_error(self):

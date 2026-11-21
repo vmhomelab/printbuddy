@@ -4,6 +4,7 @@ import ast
 import asyncio
 import inspect
 import json
+import socket
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -186,3 +187,106 @@ class TestClientSerialLifecycle:
         # stop() is async but we only need to cover the clear() path; run a minimal version
         asyncio.run(server.stop())
         assert server._client_serials == {}
+
+
+def _build_connect_payload(
+    keep_alive: int,
+    access_code: str = "deadbeef",
+    username: str = "bblp",
+    client_id: str = "orca",
+) -> bytes:
+    """Build an MQTT 3.1.1 CONNECT variable header and payload."""
+    proto = b"MQTT"
+    payload = bytearray()
+    payload += len(proto).to_bytes(2, "big") + proto
+    payload += bytes([0x04, 0xC2])  # MQTT 3.1.1; username + password + clean session
+    payload += keep_alive.to_bytes(2, "big")
+    for value in (client_id, username, access_code):
+        encoded = value.encode("utf-8")
+        payload += len(encoded).to_bytes(2, "big") + encoded
+    return bytes(payload)
+
+
+def _mqtt_packet(packet_type: int, payload: bytes) -> bytes:
+    """Build a test MQTT frame whose remaining length fits one byte."""
+    assert len(payload) < 128
+    return bytes([packet_type, len(payload)]) + payload
+
+
+class TestHandleConnectKeepalive:
+    """CONNECT keepalive must be surfaced to the client session handler."""
+
+    def test_returns_negotiated_keepalive_after_successful_authentication(self):
+        server = _make_server()
+        writer = MagicMock()
+        writer.write = MagicMock()
+        writer.drain = AsyncMock()
+
+        result = asyncio.run(server._handle_connect(_build_connect_payload(60), writer))
+
+        assert result == (True, 60)
+
+
+class TestHandleClientIdleConnection:
+    """Authenticated slicers must not be disconnected merely for being idle."""
+
+    @pytest.mark.asyncio
+    async def test_idle_authenticated_client_stays_connected_past_keepalive_boundary(self):
+        server = _make_server()
+        server._running = True
+        reader = asyncio.StreamReader()
+        reader.feed_data(_mqtt_packet(0x10, _build_connect_payload(keep_alive=1)))
+
+        writer = MagicMock()
+        writer.write = MagicMock()
+        writer.drain = AsyncMock()
+        writer.close = MagicMock()
+        writer.wait_closed = AsyncMock()
+        client_socket = MagicMock()
+        writer.get_extra_info = MagicMock(
+            side_effect=lambda name: (
+                ("1.2.3.4", 12345) if name == "peername" else client_socket if name == "socket" else None
+            )
+        )
+        server._send_status_report = AsyncMock()
+
+        task = asyncio.create_task(server._handle_client(reader, writer))
+        await asyncio.sleep(1.7)  # Past the MQTT-spec 1.5x keepalive boundary.
+
+        assert not task.done()
+        assert not writer.close.called
+        client_socket.setsockopt.assert_called_once_with(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+
+        reader.feed_data(bytes([0xE0, 0x00]))  # DISCONNECT
+        await task
+
+
+class TestMqttFrameReads:
+    """MQTT frames must not be dispatched until their declared payload is complete."""
+
+    @pytest.mark.asyncio
+    async def test_partial_publish_frame_waits_for_remaining_payload(self):
+        server = _make_server()
+        server._running = True
+        reader = asyncio.StreamReader()
+        writer = MagicMock()
+        writer.write = MagicMock()
+        writer.drain = AsyncMock()
+        writer.close = MagicMock()
+        writer.wait_closed = AsyncMock()
+        writer.get_extra_info = MagicMock(side_effect=lambda name: ("1.2.3.4", 12345) if name == "peername" else None)
+        server._send_status_report = AsyncMock()
+
+        publish_payload = _build_publish_payload("device/01P00A391800001/request", {"pushing": {"command": "pushall"}})
+        frame = _mqtt_packet(0x30, publish_payload)
+        reader.feed_data(_mqtt_packet(0x10, _build_connect_payload(keep_alive=60)) + frame[:-1])
+        server._handle_publish = AsyncMock()
+
+        task = asyncio.create_task(server._handle_client(reader, writer))
+        await asyncio.sleep(0.05)
+        assert not server._handle_publish.called
+
+        reader.feed_data(frame[-1:] + bytes([0xE0, 0x00]))
+        await asyncio.wait_for(task, timeout=0.5)
+
+        server._handle_publish.assert_awaited_once()

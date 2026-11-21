@@ -8,7 +8,7 @@ from pathlib import Path
 
 import defusedxml.ElementTree as ET
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, func, inspect as sa_inspect, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -22,6 +22,7 @@ from backend.app.models.print_batch import PrintBatch
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer import Printer
 from backend.app.models.project import Project
+from backend.app.models.project_plan import ProjectPlanItem
 from backend.app.models.user import User
 from backend.app.schemas.print_queue import (
     PrintBatchResponse,
@@ -31,10 +32,17 @@ from backend.app.schemas.print_queue import (
     PrintQueueItemCreate,
     PrintQueueItemResponse,
     PrintQueueItemUpdate,
+    PrintQueueProjectLink,
+    PrintQueueProjectLinkResponse,
     PrintQueueReorder,
 )
 from backend.app.services.filament_deficit import compute_deficit_for_queue_item
 from backend.app.services.notification_service import notification_service
+from backend.app.services.queue_project_link import (
+    add_queue_items_to_plan,
+    apply_project_to_queue_item,
+    get_project_or_404,
+)
 from backend.app.utils.printer_models import normalize_printer_model, normalize_printer_model_id
 from backend.app.utils.threemf_tools import extract_filament_usage_from_3mf
 
@@ -156,6 +164,13 @@ def _extract_print_time_from_3mf(file_path: Path, plate_id: int | None = None) -
     return None
 
 
+def _loaded_project_name(item: PrintQueueItem) -> str | None:
+    """Project name if the relationship is already loaded (never lazy-loads in async)."""
+    if item.project_id is None or "project" in sa_inspect(item).unloaded:
+        return None
+    return item.project.name if item.project else None
+
+
 def _enrich_response(item: PrintQueueItem) -> PrintQueueItemResponse:
     """Add nested archive/printer/library_file info to response."""
     # Parse ams_mapping from JSON string BEFORE model_validate
@@ -220,6 +235,10 @@ def _enrich_response(item: PrintQueueItem) -> PrintQueueItemResponse:
         # Batch grouping
         "batch_id": item.batch_id,
         "batch_name": item.batch.name if item.batch else None,
+        # Project "job" tracking
+        "project_id": item.project_id,
+        "project_name": _loaded_project_name(item),
+        "plan_item_id": item.plan_item_id,
         # SJF scheduling
         "been_jumped": item.been_jumped,
         # Auto-print G-code injection
@@ -310,6 +329,7 @@ async def list_queue(
             selectinload(PrintQueueItem.library_file),
             selectinload(PrintQueueItem.created_by),
             selectinload(PrintQueueItem.batch),
+            selectinload(PrintQueueItem.project),
         )
         .order_by(PrintQueueItem.printer_id.nulls_first(), PrintQueueItem.position)
     )
@@ -475,6 +495,11 @@ async def add_to_queue(
 
     # If filament overrides are provided, update required_filament_types to match override types
     filament_overrides_json = None
+    if data.filament_overrides and data.plan_item_id and not target_model_norm:
+        # Project-plan items carry per-slot material/colour choices for
+        # printer-assigned (or unassigned) items too; the scheduler applies
+        # them when it computes the AMS mapping for the assigned printer.
+        filament_overrides_json = json.dumps(data.filament_overrides)
     if data.filament_overrides and target_model_norm:
         filament_overrides_json = json.dumps(data.filament_overrides)
         # Update required_filament_types from overrides so scheduler validates against overridden types
@@ -559,6 +584,14 @@ async def add_to_queue(
         if not project_result.scalar_one_or_none():
             raise HTTPException(status_code=404, detail="Project not found")
 
+    if data.plan_item_id is not None:
+        plan_result = await db.execute(select(ProjectPlanItem).where(ProjectPlanItem.id == data.plan_item_id))
+        plan_item = plan_result.scalar_one_or_none()
+        if not plan_item:
+            raise HTTPException(status_code=404, detail="Plan item not found")
+        if data.project_id is not None and plan_item.project_id != data.project_id:
+            raise HTTPException(status_code=400, detail="Plan item belongs to a different project")
+
     ams_mapping_json = json.dumps(data.ams_mapping) if data.ams_mapping else None
     items = []
     for i in range(quantity):
@@ -586,6 +619,7 @@ async def add_to_queue(
             use_ams=data.use_ams,
             gcode_injection=data.gcode_injection,
             project_id=data.project_id,
+            plan_item_id=data.plan_item_id,
             position=max_pos + 1 + i,
             status="pending",
             created_by_id=current_user.id if current_user else None,
@@ -600,7 +634,7 @@ async def add_to_queue(
     # Refresh the first item for the response
     item = items[0]
     await db.refresh(item)
-    await db.refresh(item, ["archive", "printer", "library_file", "created_by", "batch"])
+    await db.refresh(item, ["archive", "printer", "library_file", "created_by", "batch", "project"])
 
     source_name = f"archive {data.archive_id}" if data.archive_id else f"library file {data.library_file_id}"
     target_desc = data.printer_id or (f"model {target_model_norm}" if target_model_norm else "unassigned")
@@ -680,6 +714,11 @@ async def bulk_update_queue_items(
         if not result.scalar_one_or_none():
             raise HTTPException(400, "Printer not found")
 
+    project_change = "project_id" in update_data
+    new_project_id = update_data.pop("project_id", None)
+    if project_change and new_project_id is not None:
+        await get_project_or_404(db, new_project_id)
+
     # Fetch all items
     result = await db.execute(select(PrintQueueItem).where(PrintQueueItem.id.in_(data.item_ids)))
     items = result.scalars().all()
@@ -699,6 +738,8 @@ async def bulk_update_queue_items(
 
         for field, value in update_data.items():
             setattr(item, field, value)
+        if project_change and new_project_id != item.project_id:
+            await apply_project_to_queue_item(db, item, new_project_id)
         updated_count += 1
 
     await db.commit()
@@ -709,6 +750,76 @@ async def bulk_update_queue_items(
         skipped_count=skipped_count,
         message=f"Updated {updated_count} items"
         + (f", skipped {skipped_count} non-pending/not-owned" if skipped_count else ""),
+    )
+
+
+@router.post("/project-link", response_model=PrintQueueProjectLinkResponse)
+async def link_queue_items_to_project(
+    data: PrintQueueProjectLink,
+    db: AsyncSession = Depends(get_db),
+    auth_result: tuple[User | None, bool] = Depends(
+        require_ownership_permission(
+            Permission.QUEUE_UPDATE_ALL,
+            Permission.QUEUE_UPDATE_OWN,
+        )
+    ),
+):
+    """Link queue items to a project (or unlink with ``project_id: null``).
+
+    Unlike the generic update endpoints this works for items in any status —
+    a project link is bookkeeping only and does not touch dispatch. The
+    item's archive is linked too, so the print shows up in the project.
+    With ``add_to_plan`` the items also become (or join) job-plan rows;
+    archive-only items (virtual-printer uploads) are copied into the File
+    Manager for that, since plan rows reference File Manager files.
+    """
+    user, can_modify_all = auth_result
+
+    if not data.item_ids:
+        raise HTTPException(400, "No item IDs provided")
+    if data.add_to_plan and data.project_id is None:
+        raise HTTPException(400, "add_to_plan requires a project_id")
+    if data.project_id is not None:
+        await get_project_or_404(db, data.project_id)
+
+    result = await db.execute(
+        select(PrintQueueItem).where(PrintQueueItem.id.in_(data.item_ids)).order_by(PrintQueueItem.position)
+    )
+    items = list(result.scalars().all())
+
+    linked: list[PrintQueueItem] = []
+    skipped_count = len(set(data.item_ids)) - len(items)
+    for item in items:
+        if not can_modify_all and item.created_by_id != user.id:
+            skipped_count += 1
+            continue
+        if item.project_id != data.project_id:
+            await apply_project_to_queue_item(db, item, data.project_id)
+        linked.append(item)
+
+    plan_stats = None
+    if data.add_to_plan and linked and data.project_id is not None:
+        plan_stats = await add_queue_items_to_plan(
+            db,
+            linked,
+            data.project_id,
+            folder_id=data.folder_id,
+            owner_id=user.id if user else None,
+        )
+
+    await db.commit()
+
+    message = f"Linked {len(linked)} item(s)" if data.project_id is not None else f"Unlinked {len(linked)} item(s)"
+    if skipped_count:
+        message += f", skipped {skipped_count}"
+    logger.info("Queue project link: %s (project=%s)", message, data.project_id)
+    return PrintQueueProjectLinkResponse(
+        updated_count=len(linked),
+        skipped_count=skipped_count,
+        plan_items_created=plan_stats.plan_items_created if plan_stats else 0,
+        plan_items_linked=plan_stats.plan_items_linked if plan_stats else 0,
+        library_files_created=plan_stats.library_files_created if plan_stats else 0,
+        message=message,
     )
 
 
@@ -831,6 +942,7 @@ async def list_queue_history(
             selectinload(PrintQueueItem.library_file),
             selectinload(PrintQueueItem.created_by),
             selectinload(PrintQueueItem.batch),
+            selectinload(PrintQueueItem.project),
         )
         .where(PrintQueueItem.status.in_(history_statuses))
     )
@@ -886,6 +998,7 @@ async def get_queue_item(
             selectinload(PrintQueueItem.library_file),
             selectinload(PrintQueueItem.created_by),
             selectinload(PrintQueueItem.batch),
+            selectinload(PrintQueueItem.project),
         )
         .where(PrintQueueItem.id == item_id)
     )
@@ -989,11 +1102,18 @@ async def update_queue_item(
             json.dumps(update_data["filament_overrides"]) if update_data["filament_overrides"] else None
         )
 
+    project_change = "project_id" in update_data
+    new_project_id = update_data.pop("project_id", None)
+    if project_change and new_project_id is not None:
+        await get_project_or_404(db, new_project_id)
+
     for field, value in update_data.items():
         setattr(item, field, value)
+    if project_change and new_project_id != item.project_id:
+        await apply_project_to_queue_item(db, item, new_project_id)
 
     await db.commit()
-    await db.refresh(item, ["archive", "printer", "library_file", "created_by", "batch"])
+    await db.refresh(item, ["archive", "printer", "library_file", "created_by", "batch", "project"])
 
     logger.info("Updated queue item %s", item_id)
     return _enrich_response(item)
@@ -1193,6 +1313,7 @@ async def start_queue_item(
             selectinload(PrintQueueItem.printer),
             selectinload(PrintQueueItem.library_file),
             selectinload(PrintQueueItem.batch),
+            selectinload(PrintQueueItem.project),
         )
         .where(PrintQueueItem.id == item_id)
     )
@@ -1223,7 +1344,7 @@ async def start_queue_item(
     if skip_filament_check:
         item.skip_filament_check = True
     await db.commit()
-    await db.refresh(item, ["archive", "printer", "library_file", "created_by", "batch"])
+    await db.refresh(item, ["archive", "printer", "library_file", "created_by", "batch", "project"])
 
     logger.info(
         "Manually started queue item %s (cleared manual_start; skip_filament_check=%s)",

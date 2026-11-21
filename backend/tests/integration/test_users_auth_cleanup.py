@@ -116,7 +116,7 @@ class TestDeleteUserCleansAuthRows:
         user_id = await self._create_user(async_client, auth_token, "totpclean")
 
         totp = UserTOTP(user_id=user_id, is_enabled=True)
-        totp.secret = "JBSWY3DPEHPK3PXP"  # encrypts via property setter
+        totp.secret = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"  # encrypts via property setter
         db_session.add(totp)
         await db_session.commit()
 
@@ -251,7 +251,7 @@ class TestDeleteUserCleansAuthRows:
             )
         )
         totp = UserTOTP(user_id=user_id, is_enabled=True)
-        totp.secret = "JBSWY3DPEHPK3PXP"
+        totp.secret = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
         db_session.add(totp)
         db_session.add(
             UserOTPCode(

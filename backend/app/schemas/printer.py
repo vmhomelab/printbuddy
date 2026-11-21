@@ -1,5 +1,6 @@
 from datetime import datetime
 from typing import Any, Literal
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -8,9 +9,11 @@ from backend.app.services.elegoo_camera import (
     get_effective_camera_source,
 )
 
-PrinterProvider = Literal["bambu", "klipper", "mainsail", "fluidd", "prusalink", "prusaconnect", "elegoo_sdcp"]
+PrinterProvider = Literal[
+    "bambu", "klipper", "mainsail", "fluidd", "prusalink", "prusaconnect", "elegoo_sdcp", "octoprint"
+]
 MOONRAKER_PROVIDERS = {"klipper", "mainsail", "fluidd"}
-HTTP_PROVIDERS = MOONRAKER_PROVIDERS | {"prusalink", "prusaconnect", "elegoo_sdcp"}
+HTTP_PROVIDERS = MOONRAKER_PROVIDERS | {"prusalink", "prusaconnect", "elegoo_sdcp", "octoprint"}
 PRUSA_CONNECT_MOBILE_BASE_URL = "https://connect-mobile-api.prusa3d.com"
 
 
@@ -39,6 +42,28 @@ def _synthetic_elegoo_sdcp_serial(value: object) -> str:
     raw = str(value or "elegoo-sdcp").strip().upper()
     normalized = "".join(ch if ch.isalnum() else "-" for ch in raw).strip("-") or "ELEGOO-SDCP"
     return f"ELEGOO-SDCP-{normalized}"[:50]
+
+
+def _synthetic_octoprint_serial(value: object) -> str:
+    raw = str(value or "octoprint").strip().upper()
+    normalized = "".join(ch if ch.isalnum() else "-" for ch in raw).strip("-") or "OCTOPRINT"
+    return f"OCTOPRINT-{normalized}"[:50]
+
+
+def normalize_octoprint_url(value: object) -> str | None:
+    """Return an OctoPrint base URL with scheme, e.g. ``octopi.local`` -> ``http://octopi.local``."""
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    if "://" not in raw:
+        raw = f"http://{raw}"
+    return raw.rstrip("/")
+
+
+def host_from_url(value: object) -> str | None:
+    """Return the hostname of a URL, used as ip_address for URL-only providers."""
+    url = normalize_octoprint_url(value)
+    return urlparse(url).hostname if url else None
 
 
 def infer_external_camera_type(camera_url: str) -> str:
@@ -109,6 +134,19 @@ class PrinterBase(BaseModel):
                 data["access_code"] = "prusaconnect"
             if not data.get("api_url"):
                 data["api_url"] = PRUSA_CONNECT_MOBILE_BASE_URL
+        elif provider == "octoprint":
+            # OctoPrint is configured by URL; the host doubles as ip_address so
+            # the URL is the single source of truth.
+            if data.get("api_url"):
+                data["api_url"] = normalize_octoprint_url(data["api_url"])
+                if not str(data.get("ip_address") or "").strip():
+                    data["ip_address"] = host_from_url(data["api_url"])
+            if not str(data.get("serial_number") or "").strip():
+                data["serial_number"] = _synthetic_octoprint_serial(data.get("ip_address") or data.get("api_url"))
+            if not str(data.get("access_code") or "").strip():
+                data["access_code"] = "octoprint"
+            if not data.get("api_url") and data.get("ip_address"):
+                data["api_url"] = f"http://{str(data['ip_address']).strip()}:5000"
         elif provider == "elegoo_sdcp":
             if not str(data.get("serial_number") or "").strip():
                 data["serial_number"] = _synthetic_elegoo_sdcp_serial(data.get("ip_address"))
@@ -163,6 +201,7 @@ class PrinterBase(BaseModel):
     provider_options: str | None = Field(default=None, max_length=4000)
     model: str | None = None
     location: str | None = None  # Group/location name
+    power_watts: float | None = Field(default=None, ge=0, le=10000)  # Avg power while printing (W)
     auto_archive: bool = True
     reconnect_interval_seconds: int = Field(default=30, ge=10, le=3600)
     external_camera_url: str | None = None
@@ -199,6 +238,7 @@ class PrinterUpdate(BaseModel):
     provider_options: str | None = Field(default=None, max_length=4000)
     model: str | None = None
     location: str | None = None
+    power_watts: float | None = Field(default=None, ge=0, le=10000)  # null clears
     is_active: bool | None = None
     auto_archive: bool | None = None
     reconnect_interval_seconds: int | None = Field(default=None, ge=10, le=3600)
@@ -215,6 +255,7 @@ class PrinterUpdate(BaseModel):
 class PrinterResponse(PrinterBase):
     id: int
     is_active: bool
+    custom_image_filename: str | None = None
     nozzle_count: int = 1  # 1 or 2, auto-detected from MQTT
     print_hours_offset: float = 0.0
     external_camera_url: str | None = None
@@ -246,6 +287,8 @@ class PrinterResponse(PrinterBase):
             "provider_options": getattr(printer, "provider_options", None),
             "model": printer.model,
             "location": printer.location,
+            "power_watts": getattr(printer, "power_watts", None),
+            "custom_image_filename": getattr(printer, "custom_image_filename", None),
             "auto_archive": printer.auto_archive,
             "reconnect_interval_seconds": getattr(printer, "reconnect_interval_seconds", 30),
             "external_camera_url": effective_camera.url,
@@ -302,6 +345,20 @@ class AMSTray(BaseModel):
     drying_temp: int | None = None  # RFID-recommended drying temp
     drying_time: int | None = None  # RFID-recommended drying time (hours)
     state: int | None = None  # AMS tray state: 9=empty, 10=spool present not loaded, 11=loaded
+    # Snapmaker U1 Moonraker feeder / SpoolLink fields (generic AMS payloads omit these)
+    active: bool | None = None
+    loaded_to_feeder: bool | None = None
+    loaded_to_extruder: bool | None = None
+    filament_detected: bool | None = None
+    channel_state: str | None = None
+    channel_action_state: str | None = None
+    channel_error: str | None = None
+    filament_source: str | None = None
+    filament_spool_id: int | None = None
+    remaining_weight: float | None = None
+    filament_spool_brand: str | None = None
+    filament_spool_material: str | None = None
+    filament_spool_color_name: str | None = None
 
 
 class AMSUnit(BaseModel):
@@ -317,7 +374,11 @@ class AMSUnit(BaseModel):
     dry_status: int = 0  # 0=Off, 1=Checking, 2=Drying, 3=Cooling, 4=Stopping, 5=Error
     dry_sub_status: int = 0  # 0=Off, 1=Heating, 2=Dehumidify
     dry_sf_reason: list[int] = []  # Cannot-dry reasons from firmware (see CannotDryReason)
-    module_type: str = ""  # "ams", "n3f", "n3s"
+    module_type: str = ""  # "ams", "n3f", "n3s", "n10a" (the H3C's AMS 3H)
+    # Bambu Studio's AMS type (bits 0-3 of `info`): 6 = AMS 3H (H3C, nine slots)
+    ams_type: int | None = None
+    # AMS 3H: the slots (0-8) of the zone that can dry; empty on other units
+    dry_zone_slots: list[int] = []
 
 
 class NozzleInfoResponse(BaseModel):
@@ -412,6 +473,9 @@ class PrinterStatus(BaseModel):
     door_open: bool = False  # Enclosure door open (X1/P1S/P2S/H2*)
     nozzles: list[NozzleInfoResponse] = []  # Nozzle hardware info (index 0=left/primary, 1=right)
     nozzle_rack: list[NozzleRackSlot] = []  # H2C 6-nozzle tool-changer rack
+    tool_slots: list[dict] = []  # Generic multi-tool Klipper local spool slots
+    position: dict[str, float] | None = None  # Toolhead position {x, y, z} (Klipper/PrusaConnect)
+    z_offset: float | None = None  # Active G-code Z offset in mm (Klipper)
     print_options: PrintOptionsResponse | None = None  # AI detection and print options
     # Calibration stage tracking
     stg_cur: int = -1  # Current stage number (-1 = not calibrating)
@@ -423,6 +487,11 @@ class PrinterStatus(BaseModel):
     speed_level: int = 2
     # Chamber light on/off
     chamber_light: bool = False
+    # Capability flags (provider-detected, e.g. from Moonraker objects).
+    # None = provider does not report the capability explicitly.
+    chamber_light_supported: bool | None = None
+    chamber_heater_supported: bool = False
+    chamber_temp_max: float | None = None
     # Active extruder for dual nozzle (0=right, 1=left)
     active_extruder: int = 0
     # AMS mapping for dual nozzle: which AMS is connected to which nozzle

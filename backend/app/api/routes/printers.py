@@ -3,13 +3,15 @@ import json
 import logging
 import re
 import tempfile
+import uuid
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
+from PIL import Image, UnidentifiedImageError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -35,7 +37,9 @@ from backend.app.schemas.printer import (
     PrinterStatus,
     PrinterUpdate,
     PrintOptionsResponse,
+    host_from_url,
     normalize_external_camera_update,
+    normalize_octoprint_url,
 )
 from backend.app.services import direct_print_tracking
 from backend.app.services.bambu_ftp import (
@@ -50,25 +54,67 @@ from backend.app.services.bambu_ftp import (
 )
 from backend.app.services.printer_diagnostic import run_connection_diagnostic
 from backend.app.services.printer_manager import (
+    chamber_capabilities,
+    chamber_temp_available,
     get_derived_status_name,
     printer_manager,
     resolve_plate_id,
-    supports_chamber_temp,
+    run_client_call,
     supports_drying,
+    toolhead_motion,
 )
 from backend.app.services.printer_providers.factory import create_printer_client, normalize_provider
 from backend.app.services.printer_providers.moonraker import create_moonraker_client
 from backend.app.utils.filament_ids import effective_bambu_material, generic_bambu_filament_id
 from backend.app.utils.http import build_content_disposition
+from backend.app.utils.printer_models import has_ams3h
+from backend.app.utils.tray_ids import (
+    AMS3H_UNIT_ID,
+    AmsType,
+    external_tray_id,
+    h3c_global_tray,
+    h3c_slot_key,
+    unit_ams_type,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/printers", tags=["printers"])
+
+CUSTOM_IMAGE_CONTENT_TYPES = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+}
+CUSTOM_IMAGE_FORMATS = {
+    ".jpg": "JPEG",
+    ".jpeg": "JPEG",
+    ".png": "PNG",
+    ".gif": "GIF",
+    ".webp": "WEBP",
+}
+CUSTOM_IMAGE_MAX_BYTES = 10 * 1024 * 1024
+CUSTOM_IMAGE_MAX_PIXELS = 40_000_000
+CUSTOM_IMAGE_CHUNK_SIZE = 1024 * 1024
 
 
 PRINTABLE_PRINTER_FILE_EXTENSIONS = {".gcode", ".gco", ".g", ".bgcode", ".3mf"}
 PRUSALINK_FIRMWARE_FILE_EXTENSION = ".bbf"
 PROVIDER_UPLOAD_RECONCILE_ATTEMPTS = 30
 PROVIDER_UPLOAD_RECONCILE_INTERVAL_SECONDS = 1.0
+
+
+def _should_attempt_bambu_ftp_cover(printer: Printer) -> bool:
+    """Return True only for the Bambu-specific 3MF cover implementation.
+
+    Null provider rows retain legacy Bambu behaviour, matching the archive
+    path. Explicit G-code providers must never be sent through Bambu FTP.
+    """
+    provider = getattr(printer, "provider", None)
+    if not isinstance(provider, str) or not provider.strip():
+        return True
+    return provider.lower() == "bambu"
 
 
 def _is_printable_printer_file(filename: str) -> bool:
@@ -231,7 +277,9 @@ async def _wait_for_provider_file(
     provider_client, remote_path: str, expected_size: int = 0, *, storage: str | None = None
 ) -> bool:
     for attempt in range(PROVIDER_UPLOAD_RECONCILE_ATTEMPTS):
-        if _provider_file_upload_verified(provider_client, remote_path, expected_size, storage=storage):
+        if await asyncio.to_thread(
+            _provider_file_upload_verified, provider_client, remote_path, expected_size, storage=storage
+        ):
             return True
         if attempt < PROVIDER_UPLOAD_RECONCILE_ATTEMPTS - 1:
             await asyncio.sleep(PROVIDER_UPLOAD_RECONCILE_INTERVAL_SECONDS)
@@ -294,6 +342,33 @@ async def create_printer(
                 "Could not connect to Elegoo SDCP. Verify the IP/hostname, confirm the printer is reachable on "
                 "the local network, and check that SDCP WebSocket port 3030 is accessible. The printer was not added."
             )
+        elif printer_data.provider == "octoprint":
+            error_code = test_result.get("error_code")
+            missing_permissions = test_result.get("missing_permissions") or []
+            if error_code == "octoprint_api_key_invalid":
+                failure_message = (
+                    "OctoPrint did not accept the API key. Copy a user or application key from "
+                    "OctoPrint settings. The printer was not added."
+                )
+            elif error_code == "octoprint_permissions_missing":
+                failure_message = (
+                    "The OctoPrint API key is missing permissions: "
+                    f"{', '.join(missing_permissions)}. The printer was not added."
+                )
+            else:
+                failure_message = (
+                    "Could not connect to OctoPrint. Verify the OctoPrint URL (usually http://host:5000 "
+                    "or http://octopi.local) and the API key. The printer was not added."
+                )
+            if error_code:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "code": error_code,
+                        "message": failure_message,
+                        "missing_permissions": missing_permissions,
+                    },
+                )
         else:
             failure_message = (
                 "Could not connect to Moonraker. Verify the IP/hostname, Moonraker URL "
@@ -321,6 +396,16 @@ async def create_printer(
                 printer_payload["provider_options"] = json.dumps(existing_options, separators=(",", ":"))
         except (TypeError, ValueError):
             printer_payload["provider_options"] = detected_provider_options
+    detected_camera = test_result.get("detected_camera")
+    if detected_camera and not printer_payload.get("external_camera_url"):
+        # Use the webcam the provider reports (OctoPrint) unless the user
+        # entered a camera URL; it can be changed in the camera settings later.
+        printer_payload["external_camera_url"] = detected_camera["camera_url"]
+        printer_payload["external_camera_type"] = detected_camera["camera_type"]
+        printer_payload["external_camera_snapshot_url"] = detected_camera.get("camera_snapshot_url") or None
+        printer_payload["external_camera_enabled"] = True
+        if detected_camera.get("camera_rotation") and not printer_payload.get("camera_rotation"):
+            printer_payload["camera_rotation"] = detected_camera["camera_rotation"]
 
     printer = Printer(**printer_payload)
     db.add(printer)
@@ -529,6 +614,11 @@ async def update_printer(
         raise HTTPException(404, "Printer not found")
 
     update_data = normalize_external_camera_update(printer_data.model_dump(exclude_unset=True))
+    if (printer.provider or "").lower() == "octoprint" and update_data.get("api_url"):
+        # OctoPrint is edited by URL; keep ip_address (and thus discovery
+        # de-duplication and diagnostics) in sync with the URL's host.
+        update_data["api_url"] = normalize_octoprint_url(update_data["api_url"])
+        update_data.setdefault("ip_address", host_from_url(update_data["api_url"]))
 
     # Handle nested ROI object - flatten to individual columns
     if "plate_detection_roi" in update_data:
@@ -552,7 +642,10 @@ async def update_printer(
     await db.refresh(printer)
 
     # Reconnect if connection settings changed
-    if any(k in update_data for k in ["ip_address", "access_code", "auth_token", "provider_options", "is_active"]):
+    if any(
+        k in update_data
+        for k in ["ip_address", "api_url", "access_code", "auth_token", "provider_options", "is_active"]
+    ):
         printer_manager.disconnect_printer(printer_id)
         if printer.is_active:
             try:
@@ -620,10 +713,158 @@ async def delete_printer(
         )
         await db.execute(sql_delete(PrinterMaintenance).where(PrinterMaintenance.printer_id == printer_id))
 
+    custom_image_filename = printer.custom_image_filename
     await db.delete(printer)
     await db.commit()
+    _remove_custom_image_file(custom_image_filename, printer_id)
 
     return {"status": "deleted", "archives_deleted": delete_archives}
+
+
+# ============ Custom printer image (#40) ============
+
+
+def get_printer_images_dir() -> Path:
+    """Return the persistent directory for generated printer-image files."""
+    return Path(settings.archive_dir) / "printer_images"
+
+
+def _custom_image_path(filename: str | None, printer_id: int) -> Path | None:
+    """Resolve only filenames generated for this printer inside its image directory."""
+    match = re.fullmatch(r"printer_(\d+)_[0-9a-f]{32}\.(?:jpg|jpeg|png|gif|webp)", filename or "")
+    if not match or match.group(1) != str(printer_id):
+        return None
+    images_dir = get_printer_images_dir().resolve()
+    image_path = (images_dir / filename).resolve()
+    return image_path if image_path.parent == images_dir else None
+
+
+def _remove_custom_image_file(filename: str | None, printer_id: int) -> None:
+    """Best-effort removal of a generated custom image file."""
+    image_path = _custom_image_path(filename, printer_id)
+    if not image_path:
+        if filename:
+            logger.warning("Ignoring unsafe custom image filename for printer %s: %r", printer_id, filename)
+        return
+    try:
+        image_path.unlink(missing_ok=True)
+    except OSError as exc:
+        logger.warning("Failed to remove custom image for printer %s: %s", printer_id, exc)
+
+
+def _validate_custom_image(path: Path, extension: str) -> None:
+    """Verify the image content and reject decompression-bomb-sized uploads."""
+    try:
+        with Image.open(path) as image:
+            image.verify()
+        with Image.open(path) as image:
+            if image.format != CUSTOM_IMAGE_FORMATS[extension]:
+                raise HTTPException(400, "Image content does not match its file type")
+            if image.width * image.height > CUSTOM_IMAGE_MAX_PIXELS:
+                raise HTTPException(400, "Image dimensions are too large")
+    except HTTPException:
+        raise
+    except (OSError, SyntaxError, UnidentifiedImageError, Image.DecompressionBombError) as exc:
+        raise HTTPException(400, "Uploaded file is not a valid image") from exc
+
+
+@router.post("/{printer_id}/image", response_model=PrinterResponse)
+async def upload_printer_image(
+    printer_id: int,
+    file: UploadFile = File(...),
+    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_UPDATE),
+    db: AsyncSession = Depends(get_db),
+):
+    """Upload or replace a verified custom image for one printer."""
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    printer = result.scalar_one_or_none()
+    if not printer:
+        raise HTTPException(404, "Printer not found")
+
+    extension = Path(file.filename or "").suffix.lower()
+    if extension not in CUSTOM_IMAGE_CONTENT_TYPES:
+        raise HTTPException(400, "Image must be JPG, PNG, GIF, or WebP")
+
+    images_dir = get_printer_images_dir()
+    images_dir.mkdir(parents=True, exist_ok=True)
+    temp_path = images_dir / f".upload_{uuid.uuid4().hex}"
+    size = 0
+    try:
+        with temp_path.open("xb") as destination:
+            while chunk := await file.read(CUSTOM_IMAGE_CHUNK_SIZE):
+                size += len(chunk)
+                if size > CUSTOM_IMAGE_MAX_BYTES:
+                    raise HTTPException(400, "Image is too large (max 10 MiB)")
+                destination.write(chunk)
+        _validate_custom_image(temp_path, extension)
+        filename = f"printer_{printer_id}_{uuid.uuid4().hex}{extension}"
+        final_path = images_dir / filename
+        temp_path.replace(final_path)
+    except HTTPException:
+        temp_path.unlink(missing_ok=True)
+        raise
+    except OSError as exc:
+        temp_path.unlink(missing_ok=True)
+        logger.error("Failed to save custom image for printer %s: %s", printer_id, exc)
+        raise HTTPException(500, "Failed to save image") from exc
+    finally:
+        await file.close()
+
+    old_filename = printer.custom_image_filename
+    printer.custom_image_filename = filename
+    try:
+        await db.commit()
+        await db.refresh(printer)
+    except Exception:
+        await db.rollback()
+        final_path.unlink(missing_ok=True)
+        raise
+    _remove_custom_image_file(old_filename, printer_id)
+    return printer
+
+
+@router.get("/{printer_id}/image")
+async def get_printer_image(
+    printer_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: None = RequireCameraStreamTokenIfAuthEnabled,
+):
+    """Stream a custom printer image using the standard image stream token."""
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    printer = result.scalar_one_or_none()
+    if not printer:
+        raise HTTPException(404, "Printer not found")
+    if not printer.custom_image_filename:
+        raise HTTPException(404, "No custom image set")
+
+    image_path = _custom_image_path(printer.custom_image_filename, printer_id)
+    if not image_path or not image_path.is_file():
+        logger.warning("Custom image missing for printer %s: %s", printer_id, image_path)
+        printer.custom_image_filename = None
+        await db.commit()
+        raise HTTPException(404, "Custom image file not found")
+    extension = image_path.suffix.lower()
+    return FileResponse(image_path, media_type=CUSTOM_IMAGE_CONTENT_TYPES.get(extension, "application/octet-stream"))
+
+
+@router.delete("/{printer_id}/image", response_model=PrinterResponse)
+async def delete_printer_image(
+    printer_id: int,
+    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_UPDATE),
+    db: AsyncSession = Depends(get_db),
+):
+    """Remove a custom image and return the printer to model-art fallback."""
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    printer = result.scalar_one_or_none()
+    if not printer:
+        raise HTTPException(404, "Printer not found")
+
+    old_filename = printer.custom_image_filename
+    printer.custom_image_filename = None
+    await db.commit()
+    await db.refresh(printer)
+    _remove_custom_image_file(old_filename, printer_id)
+    return printer
 
 
 @router.get("/{printer_id}/status", response_model=PrinterStatus)
@@ -695,6 +936,14 @@ async def get_printer_status(
                 if k_value is None and cali_idx is not None and cali_idx in kprofile_map:
                     k_value = kprofile_map[cali_idx]
 
+                filament_spool_id = tray_data.get("filament_spool_id")
+                try:
+                    filament_spool_id = int(filament_spool_id) if filament_spool_id is not None else None
+                except (TypeError, ValueError):
+                    filament_spool_id = None
+                if filament_spool_id is not None and filament_spool_id <= 0:
+                    filament_spool_id = None
+
                 trays.append(
                     AMSTray(
                         id=tray_data.get("id", 0),
@@ -713,6 +962,19 @@ async def get_printer_status(
                         drying_temp=tray_data.get("drying_temp"),
                         drying_time=tray_data.get("drying_time"),
                         state=tray_data.get("state"),
+                        active=tray_data.get("active"),
+                        loaded_to_feeder=tray_data.get("loaded_to_feeder"),
+                        loaded_to_extruder=tray_data.get("loaded_to_extruder"),
+                        filament_detected=tray_data.get("filament_detected"),
+                        channel_state=tray_data.get("channel_state"),
+                        channel_action_state=tray_data.get("channel_action_state"),
+                        channel_error=tray_data.get("channel_error"),
+                        filament_source=tray_data.get("filament_source"),
+                        filament_spool_id=filament_spool_id,
+                        remaining_weight=tray_data.get("remaining_weight"),
+                        filament_spool_brand=tray_data.get("filament_spool_brand"),
+                        filament_spool_material=tray_data.get("filament_spool_material"),
+                        filament_spool_color_name=tray_data.get("filament_spool_color_name"),
                     )
                 )
             # Prefer humidity_raw (percentage) over humidity (index 1-5)
@@ -749,6 +1011,7 @@ async def get_printer_status(
                     # Drying: dry_time > 0 means drying is active (minutes remaining)
                     dry_time=int(ams_data.get("dry_time") or 0),
                     module_type=str(ams_data.get("module_type") or ""),
+                    **_rack_ams_fields(ams_data),
                 )
             )
 
@@ -849,7 +1112,7 @@ async def get_printer_status(
     # Filter out chamber temp for models that don't have a real sensor
     # P1P, P1S, A1, A1Mini report meaningless chamber_temper values
     temperatures = state.temperatures
-    if not supports_chamber_temp(printer.model):
+    if not chamber_temp_available(printer.model, state):
         temperatures = {
             k: v for k, v in temperatures.items() if k not in ("chamber", "chamber_target", "chamber_heating")
         }
@@ -873,6 +1136,8 @@ async def get_printer_status(
                 .limit(1)
             )
             current_archive_id = archive_row.scalar_one_or_none()
+
+    position, z_offset = toolhead_motion(state)
 
     return PrinterStatus(
         id=printer_id,
@@ -901,6 +1166,9 @@ async def get_printer_status(
         door_open=state.door_open,
         nozzles=nozzles,
         nozzle_rack=nozzle_rack,
+        tool_slots=(state.raw_data.get("tool_slots") or []) if isinstance(state.raw_data, dict) else [],
+        position=position,
+        z_offset=z_offset,
         print_options=print_options,
         stg_cur=state.stg_cur,
         stg_cur_name=get_derived_status_name(state, printer.model),
@@ -908,6 +1176,7 @@ async def get_printer_status(
         airduct_mode=state.airduct_mode,
         speed_level=state.speed_level,
         chamber_light=state.chamber_light,
+        **chamber_capabilities(state),
         active_extruder=state.active_extruder,
         ams_mapping=ams_mapping,
         ams_extruder_map=ams_extruder_map,
@@ -1096,6 +1365,10 @@ async def get_printer_cover(
     printer = result.scalar_one_or_none()
     if not printer:
         raise HTTPException(404, "Printer not found")
+
+    if not _should_attempt_bambu_ftp_cover(printer):
+        logger.info("Cover unavailable for non-Bambu provider %s on printer %s", printer.provider, printer_id)
+        raise HTTPException(404, "3MF cover extraction is unavailable for this printer provider")
 
     state = printer_manager.get_status(printer_id)
     if not state:
@@ -1346,7 +1619,8 @@ async def list_printer_files(
 
     provider_client = _provider_for_printer(printer)
     if provider_client is not None:
-        files = [_normalize_provider_file_entry(f) for f in provider_client.list_files(path, storage=storage)]
+        provider_files = await asyncio.to_thread(provider_client.list_files, path, storage=storage)
+        files = [_normalize_provider_file_entry(f) for f in provider_files]
     else:
         files = await list_files_async(printer.ip_address, printer.access_code, path, printer_model=printer.model)
         # Add full path to each file
@@ -1417,7 +1691,9 @@ async def upload_printer_file(
                         ),
                     )
             try:
-                success = provider_client.upload_file(tmp_path, remote_path, overwrite=overwrite, storage=storage)
+                success = await asyncio.to_thread(
+                    provider_client.upload_file, tmp_path, remote_path, overwrite=overwrite, storage=storage
+                )
                 if success:
                     success = await _wait_for_provider_file(
                         provider_client, remote_path, expected_size, storage=storage
@@ -1548,7 +1824,9 @@ async def upload_prusalink_firmware_file(
 
         reconciled = False
         try:
-            success = provider_client.upload_file(tmp_path, remote_path, overwrite=overwrite, storage=storage)
+            success = await asyncio.to_thread(
+                provider_client.upload_file, tmp_path, remote_path, overwrite=overwrite, storage=storage
+            )
             if success:
                 success = await _wait_for_provider_file(provider_client, remote_path, expected_size, storage=storage)
         except (httpx.TimeoutException, TimeoutError) as exc:
@@ -1622,11 +1900,14 @@ async def start_printer_file(
             start_options["storage"] = storage
         if ams_mapping is not None:
             start_options["ams_mapping"] = ams_mapping
-        success = provider_client.start_print(path, **start_options)
+        success = await asyncio.to_thread(provider_client.start_print, path, **start_options)
     else:
         success = printer_manager.start_print(printer_id, path)
 
     if not success:
+        reason = getattr(provider_client, "last_error", None) if provider_client is not None else None
+        if isinstance(reason, str) and reason:
+            raise HTTPException(400, f"Failed to start print: {reason}")
         raise HTTPException(500, f"Failed to start print: {path}")
 
     if direct_file_info:
@@ -1656,7 +1937,7 @@ async def download_printer_file(
 
     provider_client = _provider_for_printer(printer)
     if provider_client is not None:
-        data = provider_client.download_file(path)
+        data = await asyncio.to_thread(provider_client.download_file, path)
     else:
         data = await download_file_bytes_async(
             printer.ip_address, printer.access_code, path, printer_model=printer.model
@@ -1706,7 +1987,7 @@ async def get_printer_file_gcode(
 
     provider_client = _provider_for_printer(printer)
     if provider_client is not None:
-        data = provider_client.download_file(path)
+        data = await asyncio.to_thread(provider_client.download_file, path)
     else:
         data = await download_file_bytes_async(
             printer.ip_address, printer.access_code, path, printer_model=printer.model
@@ -1764,7 +2045,7 @@ async def get_printer_file_plates(
 
     provider_client = _provider_for_printer(printer)
     if provider_client is not None:
-        data = provider_client.download_file(path)
+        data = await asyncio.to_thread(provider_client.download_file, path)
     else:
         data = await download_file_bytes_async(
             printer.ip_address, printer.access_code, path, printer_model=printer.model
@@ -1778,42 +2059,9 @@ async def get_printer_file_plates(
         with zipfile.ZipFile(io.BytesIO(data), "r") as zf:
             namelist = zf.namelist()
 
-            # Find all plate gcode files to determine available plates
-            gcode_files = [n for n in namelist if n.startswith("Metadata/plate_") and n.endswith(".gcode")]
+            from backend.app.utils.threemf_tools import discover_plate_indices
 
-            # If no gcode is present (source-only or unsliced), fall back to plate JSON/PNG
-            plate_indices: list[int] = []
-            if gcode_files:
-                for gf in gcode_files:
-                    try:
-                        plate_str = gf[15:-6]  # Remove "Metadata/plate_" and ".gcode"
-                        plate_indices.append(int(plate_str))
-                    except ValueError:
-                        pass  # Skip gcode files with non-numeric plate indices
-            else:
-                plate_json_files = [n for n in namelist if n.startswith("Metadata/plate_") and n.endswith(".json")]
-                plate_png_files = [
-                    n
-                    for n in namelist
-                    if n.startswith("Metadata/plate_")
-                    and n.endswith(".png")
-                    and "_small" not in n
-                    and "no_light" not in n
-                ]
-                plate_name_candidates = plate_json_files + plate_png_files
-                plate_re = re.compile(r"^Metadata/plate_(\d+)\.(json|png)$")
-                seen_indices: set[int] = set()
-                for name in plate_name_candidates:
-                    match = plate_re.match(name)
-                    if match:
-                        try:
-                            index = int(match.group(1))
-                        except ValueError:
-                            continue
-                        if index in seen_indices:
-                            continue
-                        seen_indices.add(index)
-                        plate_indices.append(index)
+            plate_indices = discover_plate_indices(zf)
 
             if not plate_indices:
                 return {
@@ -1823,8 +2071,6 @@ async def get_printer_file_plates(
                     "plates": [],
                     "is_multi_plate": False,
                 }
-
-            plate_indices.sort()
 
             # Parse model_settings.config for plate names
             plate_names = {}
@@ -2001,7 +2247,7 @@ async def get_printer_file_plate_thumbnail(
 
     provider_client = _provider_for_printer(printer)
     if provider_client is not None:
-        data = provider_client.download_file(path)
+        data = await asyncio.to_thread(provider_client.download_file, path)
     else:
         data = await download_file_bytes_async(
             printer.ip_address, printer.access_code, path, printer_model=printer.model
@@ -2084,7 +2330,7 @@ async def delete_printer_file(
 
     provider_client = _provider_for_printer(printer)
     if provider_client is not None:
-        success = provider_client.delete_file(path, storage=storage)
+        success = await asyncio.to_thread(provider_client.delete_file, path, storage=storage)
     else:
         success = await delete_file_async(printer.ip_address, printer.access_code, path, printer_model=printer.model)
     if not success:
@@ -2456,13 +2702,39 @@ async def start_calibration(
 # ============================================================================
 
 
+def _rack_ams_fields(ams_data: dict) -> dict:
+    """``ams_type`` / ``dry_zone_slots`` of an H3C's AMS 3H unit for the status API; {} for any other unit."""
+    try:
+        ams_id = int(ams_data.get("id", 0))
+    except (TypeError, ValueError):
+        return {}
+    kind = unit_ams_type(ams_id, ams_data.get("info"))
+    if kind != AmsType.ZMULTI_A:
+        return {}
+    slots = [s for s in ams_data.get("dry_zone_slots") or [] if isinstance(s, int) and 0 <= s < 9]
+    return {"ams_type": int(kind), "dry_zone_slots": slots}
+
+
 def _slot_preset_key(ams_id: int, tray_id: int) -> int:
     # Mirrors frontend getGlobalTrayId (amsHelpers.ts): AMS-HT (128-135) is keyed
     # by ams_id since each unit has a single slot and shares its global ID with
     # the unit itself. Regular AMS and external (255) use ams_id*4+tray_id.
     if 128 <= ams_id <= 135:
         return ams_id
+    # The H3C's AMS 3H (unit 32) is keyed by Studio's 28 + slot.
+    if ams_id == AMS3H_UNIT_ID:
+        return h3c_global_tray(ams_id, tray_id) or ams_id * 4 + tray_id
     return ams_id * 4 + tray_id
+
+
+def _is_snapmaker_u1_printer(printer: Printer | None) -> bool:
+    """Return whether a persisted printer is a Snapmaker U1.
+
+    This capability is deliberately determined from the saved model rather than
+    transient Moonraker status, which may be unavailable while the printer is
+    offline.
+    """
+    return bool(printer and (printer.model or "").strip().lower() == "snapmaker u1")
 
 
 @router.get("/{printer_id}/slot-presets")
@@ -2649,6 +2921,16 @@ async def configure_ams_slot(
 
     effective_tray_type = effective_bambu_material(tray_type, tray_sub_brands)
 
+    printer_result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    printer = printer_result.scalar_one_or_none()
+    if not printer:
+        raise HTTPException(status_code=404, detail="Printer not found")
+    if _is_snapmaker_u1_printer(printer):
+        raise HTTPException(
+            status_code=409,
+            detail="Snapmaker U1 filament configuration is managed on the printer; use Assign Spool to link inventory.",
+        )
+
     # Get MQTT client for this printer
     client = printer_manager.get_client(printer_id)
     if not client:
@@ -2690,7 +2972,7 @@ async def configure_ams_slot(
 
             if ams_id == 255:
                 vt_tray = state.raw_data.get("vt_tray") or []
-                ext_id = tray_id + 254
+                ext_id = external_tray_id(tray_id)  # 254/255, and an H3C's 247-253
                 for vt in vt_tray:
                     if isinstance(vt, dict) and int(vt.get("id", 254)) == ext_id:
                         current_tray_info_idx = vt.get("tray_info_idx", "")
@@ -2961,7 +3243,7 @@ async def configure_ams_slot(
 
     # Request fresh status push from printer so frontend gets updated data via WebSocket
     logger.info("[configure_ams_slot] Requesting status update from printer")
-    update_result = client.request_status_update()
+    update_result = await run_client_call(client, client.request_status_update)
     logger.info("[configure_ams_slot] Status update request result: %s", update_result)
 
     return {
@@ -2982,6 +3264,16 @@ async def reset_ams_slot(
 
     This clears the filament configuration from the slot.
     """
+    printer_result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    printer = printer_result.scalar_one_or_none()
+    if not printer:
+        raise HTTPException(status_code=404, detail="Printer not found")
+    if _is_snapmaker_u1_printer(printer):
+        raise HTTPException(
+            status_code=409,
+            detail="Snapmaker U1 filament configuration is managed on the printer; use Assign Spool to link inventory.",
+        )
+
     # Get MQTT client for this printer
     client = printer_manager.get_client(printer_id)
     if not client:
@@ -3007,7 +3299,7 @@ async def reset_ams_slot(
         await db.commit()
 
     # Request fresh status push from printer so frontend gets updated data via WebSocket
-    client.request_status_update()
+    await run_client_call(client, client.request_status_update)
 
     return {
         "success": True,
@@ -3179,6 +3471,44 @@ async def debug_simulate_print_complete(
 # Print Control Endpoints
 # =============================================================================
 
+# Printer states from which each control action is valid. A client returning
+# False while the printer is outside these states is a request conflict (409),
+# not a server failure (500).
+_PRINT_CONTROL_VALID_STATES = {
+    "pause": frozenset({"RUNNING"}),
+    "resume": frozenset({"PAUSE"}),
+}
+
+
+def _printer_state_name(client) -> str | None:
+    state = getattr(getattr(client, "state", None), "state", None)
+    return state if isinstance(state, str) and state else None
+
+
+async def _run_print_control(client, action: str) -> None:
+    """Send a print-control command and map failures to precise HTTP errors.
+
+    - Printer in a state where the action makes no sense -> 409 with the state.
+    - Printer rejected the command (HTTP 4xx from the provider) -> 409 with the state.
+    - Anything else -> 500 / 502 as before.
+    """
+    method = {"pause": client.pause_print, "resume": client.resume_print, "stop": client.stop_print}[action]
+    try:
+        success = await run_client_call(client, method)
+    except httpx.HTTPStatusError as exc:
+        status = exc.response.status_code if exc.response is not None else None
+        state = _printer_state_name(client) or "unknown"
+        if status is not None and 400 <= status < 500:
+            raise HTTPException(409, f"Printer rejected {action} (state={state})") from exc
+        raise HTTPException(502, f"Printer returned an error for {action} (state={state})") from exc
+    if success:
+        return
+    state = _printer_state_name(client)
+    valid = _PRINT_CONTROL_VALID_STATES.get(action)
+    if state and valid is not None and state not in valid:
+        raise HTTPException(409, f"Cannot {action} print while printer is {state}")
+    raise HTTPException(500, f"Failed to {action} print")
+
 
 @router.post("/{printer_id}/print/stop")
 async def stop_print(
@@ -3196,9 +3526,7 @@ async def stop_print(
     if not client:
         raise HTTPException(400, "Printer not connected")
 
-    success = client.stop_print()
-    if not success:
-        raise HTTPException(500, "Failed to stop print")
+    await _run_print_control(client, "stop")
 
     # Mark this printer as user-stopped so on_print_complete reclassifies
     # the resulting "failed"/"aborted" MQTT status as "cancelled" — otherwise
@@ -3266,9 +3594,7 @@ async def pause_print(
     if not client:
         raise HTTPException(400, "Printer not connected")
 
-    success = client.pause_print()
-    if not success:
-        raise HTTPException(500, "Failed to pause print")
+    await _run_print_control(client, "pause")
 
     return {"success": True, "message": "Print pause command sent"}
 
@@ -3289,9 +3615,7 @@ async def resume_print(
     if not client:
         raise HTTPException(400, "Printer not connected")
 
-    success = client.resume_print()
-    if not success:
-        raise HTTPException(500, "Failed to resume print")
+    await _run_print_control(client, "resume")
 
     return {"success": True, "message": "Print resume command sent"}
 
@@ -3369,7 +3693,7 @@ async def set_chamber_light(
     if not callable(set_chamber_light_method):
         raise HTTPException(400, "Chamber light control is not supported by this printer provider")
 
-    success = set_chamber_light_method(on)
+    success = await run_client_call(client, set_chamber_light_method, on)
     if not success:
         raise HTTPException(500, "Failed to control chamber light")
 
@@ -3418,7 +3742,7 @@ async def set_fan_speed(
         100 if force_binary_chamber and normalized_fan in {"chamber", "box", "box_fan"} and speed > 0 else speed
     )
     try:
-        success = set_fan_speed_method(normalized_fan, effective_speed)
+        success = await run_client_call(client, set_fan_speed_method, normalized_fan, effective_speed)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     if not success:
@@ -3482,7 +3806,7 @@ async def bed_jog(
     if force:
         lines.append("M211 S1")
 
-    if not client.send_gcode("\n".join(lines)):
+    if not await run_client_call(client, client.send_gcode, "\n".join(lines)):
         raise HTTPException(500, "Failed to send bed-jog command")
 
     return {"success": True, "message": f"Bed jog {distance:+.1f} mm sent"}
@@ -3570,7 +3894,7 @@ async def set_nozzle_temperature(
     set_temp = getattr(client, "set_nozzle_temperature", None)
     if not callable(set_temp):
         raise HTTPException(400, "Printer provider does not support nozzle temperature control")
-    if not set_temp(target):
+    if not await run_client_call(client, set_temp, target):
         raise HTTPException(500, "Failed to set nozzle temperature")
     return {"success": True, "message": f"Nozzle target set to {target}°C"}
 
@@ -3597,9 +3921,43 @@ async def set_bed_temperature(
     set_temp = getattr(client, "set_bed_temperature", None)
     if not callable(set_temp):
         raise HTTPException(400, "Printer provider does not support bed temperature control")
-    if not set_temp(target):
+    if not await run_client_call(client, set_temp, target):
         raise HTTPException(500, "Failed to set bed temperature")
     return {"success": True, "message": f"Bed target set to {target}°C"}
+
+
+@router.post("/{printer_id}/temperature/chamber")
+async def set_chamber_temperature(
+    printer_id: int,
+    target: int = Query(..., description="Chamber target temperature in °C; 0 turns heater off"),
+    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_CONTROL),
+    db: AsyncSession = Depends(get_db),
+):
+    """Set chamber heater target temperature (clamped to the printer's limit)."""
+    if target < 0 or target > 100:
+        raise HTTPException(400, "Chamber temperature must be 0-100°C")
+
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    printer = result.scalar_one_or_none()
+    if not printer:
+        raise HTTPException(404, "Printer not found")
+
+    client = printer_manager.get_client(printer_id)
+    if not client:
+        raise HTTPException(400, "Printer not connected")
+    set_temp = getattr(client, "set_chamber_temperature", None)
+    if not callable(set_temp):
+        raise HTTPException(400, "Printer provider does not support chamber temperature control")
+    max_temp = getattr(getattr(client, "state", None), "chamber_temp_max", None)
+    if max_temp is not None and target > max_temp:
+        raise HTTPException(400, f"Chamber temperature must be 0-{int(max_temp)}°C for this printer")
+    try:
+        success = await run_client_call(client, set_temp, target)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if not success:
+        raise HTTPException(500, "Failed to set chamber temperature")
+    return {"success": True, "message": f"Chamber target set to {target}°C"}
 
 
 @router.post("/{printer_id}/home-axes")
@@ -3648,8 +4006,15 @@ async def home_axes(
         raise HTTPException(400, "Printer not connected")
 
     provider = str(getattr(printer, "provider", "") or "").lower()
+    if provider == "octoprint":
+        # OctoPrint has a dedicated home command that respects its printer
+        # profile (axis inversion, custom home G-code) instead of raw G28.
+        home_axes = ["x", "y", "z"] if axes == "all" else list(axes)
+        if not await run_client_call(client, client.home_axes, home_axes):
+            raise HTTPException(409, "OctoPrint rejected the home command (printer busy or not operational)")
+        return {"success": True, "message": f"Home {axes.upper()} command sent"}
     script = axis_scripts[axes] if provider in {"klipper", "mainsail", "fluidd", "prusalink"} else "G28"
-    if not client.send_gcode(script):
+    if not await run_client_call(client, client.send_gcode, script):
         raise HTTPException(500, "Failed to send home command")
 
     message = "Full auto-home sequence sent" if script == "G28" else f"Home {axes.upper()} command sent"
@@ -3892,7 +4257,7 @@ async def refresh_ams_slot(
     if not client:
         raise HTTPException(400, "Printer not connected")
 
-    success, message = client.ams_refresh_tray(ams_id, slot_id)
+    success, message = await run_client_call(client, client.ams_refresh_tray, ams_id, slot_id)
     if not success:
         raise HTTPException(400, message)
 
@@ -4138,20 +4503,40 @@ async def ams_load(
     - 254: external spool (single-external printers, or Ext-L on dual-nozzle H2D)
     - 255: Ext-R on dual-nozzle H2D
     """
-    if tray_id not in range(16) and tray_id not in (254, 255):
-        raise HTTPException(400, "tray_id must be 0..15 (AMS slot), 254 (external / Ext-L), or 255 (Ext-R)")
+    if tray_id not in range(16) and tray_id not in range(28, 37) and tray_id not in (254, 255):
+        raise HTTPException(
+            400, "tray_id must be 0..15 (AMS slot), 28..36 (H3C AMS 3H), 254 (external / Ext-L), or 255 (Ext-R)"
+        )
 
     result = await db.execute(select(Printer).where(Printer.id == printer_id))
     printer = result.scalar_one_or_none()
     if not printer:
         raise HTTPException(404, "Printer not found")
 
+    # 28-36 are AMS 3H slots, and only an H3C has one.
+    ams3h_slot = h3c_slot_key(tray_id) if has_ams3h(printer.model) and tray_id in range(28, 37) else None
+    if tray_id in range(28, 37) and ams3h_slot is None:
+        raise HTTPException(400, "tray_id 28..36 names an AMS 3H slot, which only an H3C has")
+
     client = printer_manager.get_client(printer_id)
     if not client:
         raise HTTPException(400, "Printer not connected")
 
-    success = client.ams_load_filament(tray_id)
+    # An AMS 3H slot has nothing to feed until the AMS has pulled its filament
+    # in at the inlet; Studio offers no Load before that.
+    if ams3h_slot is not None and not client.rack_tray_has_filament(tray_id):
+        raise HTTPException(
+            409,
+            f"AMS 3H slot {ams3h_slot[1] + 1} has no filament. Push the filament into the slot's inlet "
+            "until the AMS pulls it in, then load it.",
+        )
+
+    success = await run_client_call(client, client.ams_load_filament, tray_id)
     if not success:
+        if getattr(client, "is_k2_openhost_cfs", lambda: False)() is True:
+            raise HTTPException(400, getattr(client, "last_error", None) or "CFS load failed")
+        if getattr(client, "is_qidi_box", lambda: False)() is True:
+            raise HTTPException(400, getattr(client, "last_error", None) or "QIDI Box load failed")
         provider = str(getattr(printer, "provider", "") or "").lower()
         model = str(getattr(printer, "model", "") or "").lower()
         if provider in {"klipper", "mainsail", "fluidd"} and "creality k2" in model and tray_id in range(16):
@@ -4161,7 +4546,11 @@ async def ams_load(
             )
         raise HTTPException(500, "Failed to send load command")
 
-    if tray_id == 254:
+    if getattr(client, "is_qidi_box", lambda: False)() is True and tray_id in range(16):
+        target = f"QIDI Box slot {tray_id // 4 + 1}{'ABCD'[tray_id % 4]}"
+    elif ams3h_slot is not None:
+        target = f"AMS 3H slot {ams3h_slot[1] + 1}"
+    elif tray_id == 254:
         target = "external spool"
     elif tray_id == 255:
         target = "Ext-R"
@@ -4192,10 +4581,14 @@ async def ams_unload(
 
     provider = str(getattr(printer, "provider", "") or "").lower()
     if provider in {"klipper", "mainsail", "fluidd"}:
-        success = client.ams_unload_filament(tray_id)
+        success = await run_client_call(client, client.ams_unload_filament, tray_id)
     else:
-        success = client.ams_unload_filament()
+        success = await run_client_call(client, client.ams_unload_filament)
     if not success:
+        if getattr(client, "is_k2_openhost_cfs", lambda: False)() is True:
+            raise HTTPException(400, getattr(client, "last_error", None) or "CFS unload failed")
+        if getattr(client, "is_qidi_box", lambda: False)() is True:
+            raise HTTPException(400, getattr(client, "last_error", None) or "QIDI Box unload failed")
         model = str(getattr(printer, "model", "") or "").lower()
         if (
             provider in {"klipper", "mainsail", "fluidd"}
@@ -4209,9 +4602,17 @@ async def ams_unload(
             )
         raise HTTPException(500, "Failed to send unload command")
 
+    if getattr(client, "is_qidi_box", lambda: False)() is True:
+        return {"success": True, "message": "Unloading filament from the QIDI Box"}
     if tray_id is not None and provider in {"klipper", "mainsail", "fluidd"}:
         target = f"CFS T{tray_id // 4 + 1} slot {tray_id % 4 + 1}"
         return {"success": True, "message": f"Unloading filament from {target}"}
+    if has_ams3h(printer.model):
+        # The AMS 3H can't rewind: the printer retracts, the rest is pulled by hand.
+        return {
+            "success": True,
+            "message": "Unloading filament. The AMS 3H can't rewind: pull the filament out of the slot by hand.",
+        }
     return {"success": True, "message": "Unloading filament"}
 
 

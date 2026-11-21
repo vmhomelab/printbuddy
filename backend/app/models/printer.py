@@ -20,6 +20,10 @@ class Printer(Base):
     provider_options: Mapped[str | None] = mapped_column(Text, nullable=True)
     model: Mapped[str | None] = mapped_column(String(50))
     location: Mapped[str | None] = mapped_column(String(100))  # Group/location name
+    # Optional average power draw while printing (W). Used to estimate the
+    # energy cost of planned prints; falls back to smart-plug history.
+    power_watts: Mapped[float | None] = mapped_column(Float, nullable=True)
+    custom_image_filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
     nozzle_count: Mapped[int] = mapped_column(default=1)  # 1 or 2, auto-detected from MQTT
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     auto_archive: Mapped[bool] = mapped_column(Boolean, default=True)

@@ -18,7 +18,7 @@ import { StreamOverlayPage } from './pages/StreamOverlayPage';
 import { ExternalLinkPage } from './pages/ExternalLinkPage';
 import { GroupEditPage } from './pages/GroupEditPage';
 import InventoryPage from './pages/InventoryPage';
-import { MakerworldPage } from './pages/MakerworldPage';
+import { ModelImportPage } from './pages/ModelImportPage';
 import { SystemInfoPage } from './pages/SystemInfoPage';
 import { LoginPage } from './pages/LoginPage';
 import { SetupPage } from './pages/SetupPage';
@@ -166,6 +166,9 @@ function App() {
                 {/* Login page */}
                 <Route path="/login" element={<LoginPage />} />
 
+                {/* Home-screen apps installed while the start page was /launch.html */}
+                <Route path="/launch.html" element={<Navigate to="/" replace />} />
+
                 {/* Camera page - standalone, no layout, no WebSocket (doesn't need real-time updates) */}
                 <Route path="/camera/:printerId" element={<CameraPage />} />
 
@@ -189,7 +192,10 @@ function App() {
                   <Route path="inventory" element={<InventoryPage />} />
                   <Route path="files" element={<FileManagerPage />} />
                   <Route path="files/trash" element={<LibraryTrashPage />} />
-                  <Route path="makerworld" element={<PermissionRoute permission="makerworld:view"><MakerworldPage /></PermissionRoute>} />
+                  <Route path="import" element={<ModelImportPage />} />
+                  {/* Old standalone pages, now tabs of Model import */}
+                  <Route path="makerworld" element={<Navigate to="/import?source=makerworld" replace />} />
+                  <Route path="gyroidvault" element={<Navigate to="/import?source=gyroidvault" replace />} />
                   <Route path="settings" element={<PermissionRoute permission="settings:read"><SettingsPage /></PermissionRoute>} />
                   <Route path="groups/new" element={<PermissionRoute permission="groups:create"><GroupEditPage /></PermissionRoute>} />
                   <Route path="groups/:id/edit" element={<PermissionRoute permission="groups:update"><GroupEditPage /></PermissionRoute>} />

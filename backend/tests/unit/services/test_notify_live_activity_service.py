@@ -1160,3 +1160,73 @@ async def test_disabled_live_activity_config_does_not_call_notify(db_session, no
     client.start.assert_not_called()
     activity = await db_session.scalar(select(NotificationLiveActivity))
     assert activity is None
+
+
+@pytest.mark.asyncio
+async def test_print_start_after_progress_recovery_does_not_restart_activity(db_session, notify_provider):
+    """The status callback creates the tile before the delayed print-start hook runs.
+
+    Bambu print-start payloads carry the job ID only inside raw_data, so the start
+    hook must still recognise the progress-created activity instead of ending it
+    and starting a second one (the island briefly disappearing and reappearing).
+    """
+    client = AsyncMock()
+    client.start = AsyncMock(side_effect=["progress-activity", "duplicate-activity"])
+    client.end = AsyncMock(return_value=None)
+    service = NotifyLiveActivityService(client_factory=lambda config: client, status_getter=lambda _printer_id: None)
+
+    await service.on_print_progress(
+        db_session,
+        printer_id=7,
+        printer_name="Workshop P1S",
+        filename="Big_Dragon",
+        progress=0,
+        subtask_id="987654321",
+        layer_num=0,
+        total_layers=56,
+    )
+    await service.on_print_start(
+        db_session,
+        printer_id=7,
+        printer_name="Workshop P1S",
+        data={
+            "filename": "/data/Big_Dragon.gcode.3mf",
+            "subtask_name": "Big_Dragon",
+            "raw_data": {"subtask_id": "987654321"},
+        },
+    )
+
+    client.start.assert_awaited_once()
+    client.end.assert_not_awaited()
+    activities = (await db_session.scalars(select(NotificationLiveActivity))).all()
+    assert [(a.activity_id, a.state) for a in activities] == [("progress-activity", "active")]
+
+
+@pytest.mark.asyncio
+async def test_print_start_after_local_print_progress_matches_by_normalized_name(db_session, notify_provider):
+    """Local prints report subtask_id "0"; the start hook must match by display name."""
+    client = AsyncMock()
+    client.start = AsyncMock(side_effect=["progress-activity", "duplicate-activity"])
+    client.end = AsyncMock(return_value=None)
+    service = NotifyLiveActivityService(client_factory=lambda config: client, status_getter=lambda _printer_id: None)
+
+    await service.on_print_progress(
+        db_session,
+        printer_id=7,
+        printer_name="Workshop P1S",
+        filename="Big_Dragon",
+        progress=0,
+        subtask_id="0",
+    )
+    await service.on_print_start(
+        db_session,
+        printer_id=7,
+        printer_name="Workshop P1S",
+        data={"filename": "/data/Big_Dragon.gcode.3mf", "subtask_name": "Big_Dragon", "raw_data": {"subtask_id": "0"}},
+    )
+
+    client.start.assert_awaited_once()
+    client.end.assert_not_awaited()
+    activity = await db_session.scalar(select(NotificationLiveActivity))
+    assert activity.subtask_id is None
+    assert activity.state == "active"

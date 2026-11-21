@@ -124,7 +124,7 @@ function isAlwaysAllowedIdentical(value) {
   if (/^https?:\/\//.test(value)) return true;          // URL
   if (/^ON,\s+true,\s+1$/.test(value)) return true;     // literal example "ON, true, 1"
   // Brand / technical names that ship verbatim everywhere.
-  if (/^(Printbuddy|Printbuddy URL|Printbuddy Backend URL|Printbuddy|Printbuddy|Bambu Lab|Bambu Studio|Bambu Studio 2\.6\+|Bambu Studio sidecar URL|OrcaSlicer|OrcaSlicer sidecar URL|MakerWorld|Spoolman|\(Spoolman\)|Spoolman URL|Tailscale|GitHub|GitLab|Gitea|Forgejo|Discord|MQTT|FTP|HTTPS?|JSON|YAML|RTSP|TLS|SSL|CSRF|OIDC|SSO|SSO \/ OIDC|LDAP|TOTP|2FA|MFA|API|AMS|CRC|SHA256|SHA-256|kWh|MB|GB|KB|RGBA?|HSL|RGB|UTC|ISO|UI|HTTP|HTTP Method|H2D|H2D Pro|X1C|X1E|P1S|P1P|A1|A1 Mini|H2C|N3F|N3S|PETG|PLA|ABS|PA|TPU|PEI|PA-CF|PVA|HIPS|ASA|PC|PETG-HF|G\.code|G-code|gcode|cm³|°C|°F|GCODE|SOURCE|ntfy|Notify|Pushover|Telegram|Webhook|Webhook URL|Home Assistant|Home Assistant URL|CallMeBot\/WhatsApp|Printbuddy URL|Cool Plate|Cool Plate SuperTack|Engineering Plate|High Temp Plate|Smooth PEI Plate|Textured PEI Plate|Ext-L|Ext-R|ISO \(YYYY-MM-DD\))$/.test(value)) return true;
+  if (/^(Printbuddy|Printbuddy URL|Printbuddy Backend URL|Printbuddy|Printbuddy|Bambu Lab|Bambu Studio|Bambu Studio 2\.6\+|Bambu Studio sidecar URL|OrcaSlicer|OrcaSlicer sidecar URL|MakerWorld|GyroidVault|Spoolman|\(Spoolman\)|Spoolman URL|Tailscale|GitHub|GitLab|Gitea|Forgejo|Discord|MQTT|FTP|HTTPS?|JSON|YAML|RTSP|TLS|SSL|CSRF|OIDC|SSO|SSO \/ OIDC|LDAP|TOTP|2FA|MFA|API|AMS|CRC|SHA256|SHA-256|kWh|MB|GB|KB|RGBA?|HSL|RGB|UTC|ISO|UI|HTTP|HTTP Method|H2D|H2D Pro|X1C|X1E|P1S|P1P|A1|A1 Mini|H2C|N3F|N3S|PETG|PLA|ABS|PA|TPU|PEI|PA-CF|PVA|HIPS|ASA|PC|PETG-HF|G\.code|G-code|gcode|cm³|°C|°F|GCODE|SOURCE|ntfy|Notify|Pushover|Telegram|Webhook|Webhook URL|Home Assistant|Home Assistant URL|CallMeBot\/WhatsApp|Printbuddy URL|Cool Plate|Cool Plate SuperTack|Engineering Plate|High Temp Plate|Smooth PEI Plate|Textured PEI Plate|Ext-L|Ext-R|ISO \(YYYY-MM-DD\))$/.test(value)) return true;
   return false;
 }
 
@@ -140,12 +140,13 @@ function isAlwaysAllowedIdentical(value) {
 // German loanwords / cognates from English are extensive. Most short technical
 // UI labels are identical in DE. List below curates the legitimate ones.
 const DE_COGNATES = [
+  'Warping', // 3D printing term, commonly used untranslated
   'Name', 'Status', 'Tag', 'Tags', 'Online', 'Offline', 'Standard', 'Modus',
   'Stop', 'Reset', 'Test', 'Code', 'Token', 'Server', 'Port', 'Bug', 'Job',
   'Pause', 'Power', 'System', 'Problem', 'Designer', 'Extruder', 'Firmware',
   'Material', 'Original', 'Position', 'Webhook', 'Workflow', 'Slicer',
-  'Region', 'Normal', 'Orange', 'Branch', 'Budget', 'Commit', 'Global',
-  'Version', 'Slot', 'Live', 'Rate', 'Host', 'Trend', 'Min', 'Admin', 'Cloud',
+  'Region', 'Normal', 'Orange', 'Branch', 'Budget', 'Budget {{value}}', 'Commit', 'Global',
+  'Version', 'Slot', 'Slot {{slot}}', 'Live', 'Rate', 'Host', 'Trend', 'Min', 'Admin', 'Cloud',
   'Filament', 'Filaments', 'Software', 'Hardware', 'Avatar', 'Pin', 'Modal',
   'Active', 'Plate', 'Layer', 'Total', 'Plus', 'Pro', 'Mini', 'Studio',
   'Temperatur', 'Process', 'Service', 'Cache', 'Color', 'Login', 'Logout',
@@ -169,6 +170,7 @@ const DE_COGNATES = [
 
 // French cognates — many UI labels overlap with English exactly.
 const FR_COGNATES = [
+  'Warping', // 3D printing term, commonly used untranslated
   'Status', 'Tag', 'Tags', 'Online', 'Offline', 'Standard', 'Filament',
   'Filaments', 'Software', 'Hardware', 'Stop', 'Reset', 'Test', 'Code',
   'Token', 'Server', 'Port', 'Plate', 'Layer', 'Active', 'Total', 'Avatar',
@@ -199,12 +201,13 @@ const FR_COGNATES = [
   'Expand dispatch details', 'Collapse dispatch details',
   'Cancelling upload...', 'Backup in progress...', 'Searching directory...',
   'EC984C,#6CD4BC,A66EB9,D87694',
-  'Proxy', 'Navigation', 'Budget', 'Commit', 'Designer',
+  'Proxy', 'Navigation', 'Budget', 'Budget {{value}}', 'Commit', 'Designer',
   'ntfy, Pushover, Discord, etc.',
 ];
 
 // Italian cognates.
 const IT_COGNATES = [
+  'Warping', // 3D printing term, commonly used untranslated
   'Status', 'Tag', 'Tags', 'Online', 'Offline', 'Standard', 'Filament',
   'Filaments', 'Software', 'Hardware', 'Stop', 'Reset', 'Test', 'Code',
   'Token', 'Server', 'Port', 'Plate', 'Layer', 'Modal', 'Pin', 'Pro', 'Mini',
@@ -214,11 +217,11 @@ const IT_COGNATES = [
   'Bundle', 'Slicer Bundles', 'Imported', 'Smart Plugs', 'Smart Switches',
   'Smart Plug', 'High Flow', 'Sport (124%)', 'Ludicrous (166%)',
   'Standard (100%)', 'STARTTLS (Port 587)', 'SSL/TLS (Port 465)',
-  'Slot', 'Host', 'File', 'Cloud', 'Admin', 'Silk', '(Inv)', 'Slice',
+  'Slot', 'Slot {{slot}}', 'Host', 'File', 'Cloud', 'Admin', 'Silk', '(Inv)', 'Slice',
   'Backup', 'Legacy', 'Branch', 'Auto On', 'Display', 'Password',
   'Auto Off', 'Dashboard', 'Timestamp', 'Pressure Advance', 'Provisioning...',
   '(25%, 50%, 75%)', 'Provider', 'Provider: {{type}}', 'Base: {{name}}',
-  'Slicing…', 'Designer', 'Firmware', 'Timelapse', 'Commit', 'Budget',
+  'Slicing…', 'Designer', 'Firmware', 'Timelapse', 'Commit', 'Budget', 'Budget {{value}}',
   '({{count}}/8)', 'Custom Headers (JSON)', 'ETA {{minutes}} min',
   '{{name}} - Timelapse', 'Box label (62 × 29 mm)',
   'Avery L7160 — A4 sheet (38.1 × 63.5 mm × 21)',
@@ -242,11 +245,12 @@ const JA_COGNATES = [
 
 // Portuguese (BR) cognates.
 const PT_BR_COGNATES = [
+  'Warping', // 3D printing term, commonly used untranslated
   'Status', 'Tag', 'Tags', 'Online', 'Offline', 'Standard', 'Filament',
   'Software', 'Hardware', 'Stop', 'Reset', 'Test', 'Code', 'Token', 'Server',
   'Port', 'Plate', 'Layer', 'Modal', 'Pin', 'Pro', 'Mini', 'Studio', 'Cache',
   'Service', 'Avatar', 'Total', 'Active', 'Login', 'Logout', 'Color', 'Hex',
-  'Slot', 'Live', 'Rate', 'Host', 'Trend', 'Original', 'Auto', 'Bundle',
+  'Slot', 'Slot {{slot}}', 'Live', 'Rate', 'Host', 'Trend', 'Original', 'Auto', 'Bundle',
   'Imported', 'Action', 'Actions', 'Slicer Bundles', 'Sport (124%)',
   'Ludicrous (166%)', 'Standard (100%)', 'STARTTLS (Port 587)',
   'SSL/TLS (Port 465)', 'Smart Plugs', 'Smart Switches', 'High Flow',
@@ -287,6 +291,7 @@ const ZH_TW_COGNATES = [
 
 // Spanish cognates — words/phrases that are genuinely identical in Spanish.
 const ES_COGNATES = [
+  'Warping', // 3D printing term, commonly used untranslated
   'Error', 'Firmware', 'General', 'Control', 'Total', 'total', 'Material',
   'Material:', 'Color', 'Hex', 'Local', 'Global', 'China', 'Editable',
   'Normal', 'Metal', 'Multicolor', 'Proxy', 'Host', 'Factor', 'Original',

@@ -26,12 +26,15 @@ from backend.app.api.routes import (
     bug_report,
     camera,
     cloud,
+    custom_failure_reasons,
+    custom_failure_reports,
     discovery,
     external_links,
     filaments,
     firmware,
     github_backup,
     groups,
+    gyroidvault,
     inventory,
     kprofiles,
     labels,
@@ -46,6 +49,7 @@ from backend.app.api.routes import (
     notification_templates,
     notifications,
     obico,
+    octoeverywhere,
     open_filament_database,
     orca_cloud,
     pending_uploads,
@@ -53,6 +57,7 @@ from backend.app.api.routes import (
     print_queue,
     printer_fleet_groups,
     printers,
+    project_plan,
     projects,
     settings as settings_routes,
     slice_jobs,
@@ -66,6 +71,8 @@ from backend.app.api.routes import (
     user_notifications,
     users,
     virtual_printers,
+    vp_device,
+    vp_host,
     webhook,
     websocket,
 )
@@ -97,13 +104,16 @@ from backend.app.services.mqtt_smart_plug import mqtt_smart_plug_service
 from backend.app.services.notification_service import notification_service
 from backend.app.services.notify_live_activity_service import notify_live_activity_service
 from backend.app.services.obico_detection import obico_detection_service
-from backend.app.services.print_progress import effective_print_progress, live_activity_progress
+from backend.app.services.octoeverywhere_detection import octoeverywhere_detection_service
+from backend.app.services.print_progress import live_activity_progress, milestone_progress
 from backend.app.services.print_scheduler import scheduler as print_scheduler
 from backend.app.services.printer_manager import (
     init_printer_connections,
     parse_plate_id,
     printer_manager,
     printer_state_to_dict,
+    reported_nozzle_temperatures,
+    run_client_call,
 )
 from backend.app.services.smart_plug_manager import smart_plug_manager
 from backend.app.services.spool_assignment_notifications import (
@@ -942,13 +952,15 @@ def _filename_filament_metadata(filename: str | None) -> dict:
 def _file_metadata_for_archive(printer, data: dict) -> dict:
     """Return normalized file metadata for provider fallback archives.
 
-    PrusaLink can expose real file metadata. K2/Moonraker currently does not
-    expose weight in `/server/files/metadata`, but Creality/Orca filenames often
-    include material, duration, and grams.
+    PrusaLink can expose real file metadata. Moonraker exposes slicer metadata
+    via ``/server/files/metadata`` (attached by the provider as
+    ``file_metadata``). Some firmwares (Creality K2) omit the weight there, but
+    Creality/Orca filenames often include material, duration, and grams.
     """
     provider = getattr(printer, "provider", None)
     raw_data = data.get("raw_data") if isinstance(data.get("raw_data"), dict) else {}
-    if provider in {"klipper", "mainsail", "fluidd"}:
+    is_moonraker = provider in {"klipper", "mainsail", "fluidd"}
+    if is_moonraker:
         k2_metadata = _k2_cur_print_data_metadata(data)
         if k2_metadata:
             data["file_metadata"] = k2_metadata
@@ -956,9 +968,10 @@ def _file_metadata_for_archive(printer, data: dict) -> dict:
 
     metadata = data.get("file_metadata")
     if isinstance(metadata, dict) and metadata:
-        return metadata
+        if not is_moonraker or _metadata_float(metadata.get("filament_used_grams")):
+            return metadata
 
-    if provider in {"klipper", "mainsail", "fluidd"}:
+    if is_moonraker:
         for raw_name in (
             data.get("filename"),
             data.get("gcode_file"),
@@ -966,11 +979,22 @@ def _file_metadata_for_archive(printer, data: dict) -> dict:
             raw_data.get("filename"),
             raw_data.get("gcode_file"),
         ):
-            metadata = _filename_filament_metadata(str(raw_name) if raw_name else None)
-            if metadata:
-                data["file_metadata"] = metadata
-                return metadata
+            filename_metadata = _filename_filament_metadata(str(raw_name) if raw_name else None)
+            if filename_metadata:
+                if isinstance(metadata, dict) and metadata:
+                    # Moonraker metadata without weight: keep its details and
+                    # take grams/material/time from the filename.
+                    merged = dict(metadata)
+                    for key, value in filename_metadata.items():
+                        if key == "source" or merged.get(key) in (None, "", 0):
+                            merged[key] = value
+                    merged["source"] = metadata.get("source") or filename_metadata.get("source")
+                    filename_metadata = merged
+                data["file_metadata"] = filename_metadata
+                return filename_metadata
 
+    if isinstance(metadata, dict) and metadata:
+        return metadata
     return {}
 
 
@@ -984,7 +1008,23 @@ def _refresh_file_metadata_for_archive(printer_id: int, printer, data: dict, log
     metadata = _file_metadata_for_archive(printer, data)
     if metadata:
         return metadata
-    if getattr(printer, "provider", None) != "prusalink":
+    provider = getattr(printer, "provider", None)
+    if provider in {"klipper", "mainsail", "fluidd"}:
+        # Payloads built outside the provider's lifecycle edge (e.g. restart
+        # recovery) carry no file_metadata; ask Moonraker once for it.
+        client = printer_manager.get_client(printer_id)
+        refresh = getattr(client, "refresh_current_file_metadata", None)
+        if callable(refresh):
+            try:
+                refreshed = refresh()
+            except Exception as exc:
+                logger.debug("[FILE-META] Moonraker metadata refresh failed for printer %s: %s", printer_id, exc)
+                refreshed = {}
+            if isinstance(refreshed, dict) and refreshed:
+                data["file_metadata"] = refreshed
+                return _file_metadata_for_archive(printer, data)
+        return {}
+    if provider != "prusalink":
         return {}
 
     client = printer_manager.get_client(printer_id)
@@ -1008,39 +1048,197 @@ def _refresh_file_metadata_for_archive(printer_id: int, printer, data: dict, log
     return {}
 
 
+def _apply_moonraker_details_to_archive(archive, metadata: dict | None) -> bool:
+    """Copy Moonraker slicer details (layer height, temps, colors...) onto a fileless archive.
+
+    Returns True when any archive field changed.
+    """
+    if not isinstance(metadata, dict) or metadata.get("source") != "moonraker_file_metadata":
+        return False
+    changed = False
+    for key in ("layer_height", "nozzle_diameter"):
+        value = _metadata_float(metadata.get(key))
+        if value and not getattr(archive, key, None):
+            setattr(archive, key, value)
+            changed = True
+    for key in ("total_layers", "nozzle_temperature", "bed_temperature"):
+        value = _metadata_float(metadata.get(key))
+        if value and not getattr(archive, key, None):
+            setattr(archive, key, int(value))
+            changed = True
+    colors = metadata.get("filament_colors")
+    if isinstance(colors, list) and colors and not archive.filament_color:
+        archive.filament_color = ",".join(str(c) for c in colors)[:200]
+        changed = True
+    filament_types = metadata.get("filament_types")
+    if isinstance(filament_types, list) and filament_types:
+        archive.filament_type = ", ".join(dict.fromkeys(str(t) for t in filament_types))[:50]
+        changed = True
+    elif metadata.get("filament_type") and not archive.filament_type:
+        archive.filament_type = str(metadata["filament_type"])[:50]
+        changed = True
+    return changed
+
+
+async def _store_moonraker_thumbnail(printer_id: int, archive, metadata: dict, logger) -> bool:
+    """Download the slicer thumbnail Moonraker extracted and attach it to the archive."""
+    if archive.thumbnail_path:
+        return False
+    thumbnail_path = metadata.get("thumbnail_path")
+    client = printer_manager.get_client(printer_id)
+    download = getattr(client, "download_thumbnail", None)
+    if not thumbnail_path or not callable(download):
+        return False
+    data = await asyncio.to_thread(download, str(thumbnail_path))
+    if not data:
+        return False
+
+    from pathlib import Path
+
+    from backend.app.services.archive import resolve_archive_dir
+
+    archive_dir = resolve_archive_dir(archive)
+    await asyncio.to_thread(archive_dir.mkdir, parents=True, exist_ok=True)
+    suffix = Path(str(thumbnail_path)).suffix.lower()
+    if suffix not in {".png", ".jpg", ".jpeg", ".webp"}:
+        suffix = ".png"
+    thumb_file = archive_dir / f"thumbnail{suffix}"
+    await asyncio.to_thread(thumb_file.write_bytes, data)
+    archive.thumbnail_path = str(thumb_file.relative_to(app_settings.base_dir))
+    logger.info("[MOONRAKER] Stored slicer thumbnail for archive %s (%s bytes)", archive.id, len(data))
+    return True
+
+
+MOONRAKER_ARCHIVE_GCODE_DEFAULT_MB = 200
+
+
+async def _moonraker_archive_gcode_limit_bytes() -> int:
+    """Size limit for copying a Moonraker print's G-code into its archive (0 = off)."""
+    from backend.app.api.routes.settings import get_setting
+
+    async with async_session() as db:
+        raw = await get_setting(db, "moonraker_archive_gcode_max_mb")
+    try:
+        limit_mb = int(float(raw)) if raw not in (None, "") else MOONRAKER_ARCHIVE_GCODE_DEFAULT_MB
+    except (TypeError, ValueError):
+        limit_mb = MOONRAKER_ARCHIVE_GCODE_DEFAULT_MB
+    return max(limit_mb, 0) * 1024 * 1024
+
+
+async def _attach_moonraker_gcode(printer_id: int, archive_id: int, remote_filename: str, logger) -> bool:
+    """Copy the G-code of a print started outside Printbuddy into its archive.
+
+    Prints started from Fluidd, Mainsail or a slicer upload only get a
+    fileless archive, so they could not be reprinted. The file is streamed
+    from Moonraker into the archive's own folder (the same folder that holds
+    its thumbnail and photos), and ``file_path`` is set so Reprint and
+    Add to queue work. Best-effort: a missing file, a file over the size
+    limit or a network error leaves the archive fileless, as before.
+    """
+    from pathlib import Path
+
+    from backend.app.models.archive import PrintArchive
+    from backend.app.services.archive import ArchiveService, resolve_archive_dir
+
+    try:
+        limit = await _moonraker_archive_gcode_limit_bytes()
+        if limit <= 0:
+            return False
+        client = printer_manager.get_client(printer_id)
+        download = getattr(client, "download_file_to", None)
+        if not callable(download):
+            return False
+
+        async with async_session() as db:
+            archive = await db.get(PrintArchive, archive_id)
+            if archive is None or archive.file_path:
+                return False
+            name = Path(str(remote_filename).replace("\\", "/")).name
+            if not name.lower().endswith((".gcode", ".bgcode")):
+                return False
+            dest = resolve_archive_dir(archive) / name
+            size = await asyncio.to_thread(download, str(remote_filename), dest, max_bytes=limit)
+            if not size:
+                logger.info(
+                    "[MOONRAKER] G-code %s not copied into archive %s (not on the printer or over %s MB)",
+                    remote_filename,
+                    archive_id,
+                    limit // (1024 * 1024),
+                )
+                return False
+
+            # The archive may have been deleted or changed during the download.
+            await db.refresh(archive)
+            if archive.file_path:
+                await asyncio.to_thread(dest.unlink, missing_ok=True)
+                return False
+            archive.file_path = str(dest.relative_to(app_settings.base_dir))
+            archive.file_size = size
+            archive.content_hash = await asyncio.to_thread(ArchiveService.compute_file_hash, dest)
+            extra = dict(archive.extra_data or {})
+            extra["gcode_source"] = "moonraker"
+            archive.extra_data = extra
+            await db.commit()
+        logger.info("[MOONRAKER] Copied %s into archive %s (%s bytes)", remote_filename, archive_id, size)
+        return True
+    except Exception as exc:  # noqa: BLE001 - optional copy; the archive stays fileless
+        logger.warning("[MOONRAKER] Could not copy %s into archive %s: %s", remote_filename, archive_id, exc)
+        return False
+
+
 async def _apply_file_metadata_to_archive(db, printer_id: int, printer, archive, data: dict, logger) -> bool:
     """Populate a no-3MF fallback archive from provider metadata when needed."""
-    if not archive or archive.file_path or archive.filament_used_grams:
+    if not archive or archive.filament_used_grams:
+        return False
+    # A G-code copied from Moonraker (see _attach_moonraker_gcode) still leaves
+    # the archive's details to the provider metadata.
+    if archive.file_path and not (archive.extra_data or {}).get("no_3mf_available"):
         return False
     metadata = _refresh_file_metadata_for_archive(printer_id, printer, data, logger)
     if not metadata:
         return False
 
+    updated = False
     grams = _metadata_float(metadata.get("filament_used_grams"))
-    if grams is None or grams <= 0:
-        return False
-
-    archive.filament_used_grams = grams
-    archive.filament_type = metadata.get("filament_type") or archive.filament_type
-    metadata_cost = _metadata_float(metadata.get("filament_cost"))
-    if metadata_cost is None:
-        metadata_cost = await _calculate_loaded_spool_cost(db, printer_id, grams)
-    archive.cost = metadata_cost if metadata_cost is not None else archive.cost
+    if grams is not None and grams > 0:
+        archive.filament_used_grams = grams
+        archive.filament_type = metadata.get("filament_type") or archive.filament_type
+        metadata_cost = _metadata_float(metadata.get("filament_cost"))
+        if metadata_cost is None:
+            metadata_cost = await _calculate_loaded_spool_cost(db, printer_id, grams)
+        archive.cost = metadata_cost if metadata_cost is not None else archive.cost
+        updated = True
+    if _apply_moonraker_details_to_archive(archive, metadata):
+        updated = True
     metadata_print_time_raw = _metadata_float(metadata.get("print_time_seconds"))
     if metadata_print_time_raw is not None and not archive.print_time_seconds:
         archive.print_time_seconds = int(metadata_print_time_raw)
+        updated = True
+    layer_height = _metadata_float(metadata.get("layer_height"))
+    if layer_height is not None and layer_height > 0 and not archive.layer_height:
+        archive.layer_height = layer_height
+        updated = True
+    total_layers = _metadata_float(metadata.get("total_layers"))
+    if total_layers is not None and total_layers > 0 and not archive.total_layers:
+        archive.total_layers = int(total_layers)
+        updated = True
 
     extra_data = archive.extra_data if isinstance(archive.extra_data, dict) else {}
     extra_data["file_metadata"] = metadata
     archive.extra_data = extra_data
+    updated = True
     try:
         from sqlalchemy.orm.attributes import flag_modified
 
         flag_modified(archive, "extra_data")
     except Exception:
         pass
-    logger.info("[FILE-META] Applied late file metadata to archive %s (%.1fg)", archive.id, grams)
-    return True
+    logger.info(
+        "[FILE-META] Applied late file metadata to archive %s (%s)",
+        archive.id,
+        f"{grams:.1f}g" if grams is not None and grams > 0 else "no weight estimate",
+    )
+    return updated
 
 
 async def _refresh_prusalink_archive_metadata_later(
@@ -1258,6 +1456,43 @@ def _provider_name_for_progress(printer_id: int) -> str:
         return ""
 
 
+_PROGRESS_MILESTONE_MODE_TTL_SECONDS = 30.0
+_progress_milestone_mode_cache: tuple[float, str] | None = None
+
+
+def invalidate_progress_milestone_mode_cache() -> None:
+    """Drop the cached milestone mode so the next status update re-reads it."""
+    global _progress_milestone_mode_cache
+    _progress_milestone_mode_cache = None
+
+
+async def _get_progress_milestone_mode() -> str:
+    """Return the configured milestone source ('layers' or 'print_progress').
+
+    Status callbacks fire many times per second, so cache the setting briefly
+    instead of hitting the database on every update.
+    """
+    global _progress_milestone_mode_cache
+    now = time.monotonic()
+    cached = _progress_milestone_mode_cache
+    if cached and now - cached[0] < _PROGRESS_MILESTONE_MODE_TTL_SECONDS:
+        return cached[1]
+    mode = "layers"
+    try:
+        from backend.app.api.routes.settings import get_setting
+
+        async with async_session() as db:
+            value = await get_setting(db, "progress_milestone_mode")
+        if value in ("layers", "print_progress"):
+            mode = value
+    except Exception:
+        logging.getLogger(__name__).debug("Could not read progress_milestone_mode", exc_info=True)
+        if cached:
+            mode = cached[1]
+    _progress_milestone_mode_cache = (now, mode)
+    return mode
+
+
 def _should_send_print_almost_done(printer_id: int, progress: float) -> bool:
     """Return whether this print just crossed the almost-done threshold."""
 
@@ -1324,26 +1559,45 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
     # Only broadcast if something meaningful changed (reduce WebSocket spam)
     # Include rounded temperatures to detect meaningful temp changes (within 1 degree)
     temps = state.temperatures or {}
-    nozzle_temp = round(temps.get("nozzle", 0))
+    nozzle_temperatures = tuple(
+        (
+            index,
+            round(float(value)),
+            round(float(temps.get(f"nozzle{'_' + str(index) if index > 1 else ''}_target", 0))),
+        )
+        for index, value in reported_nozzle_temperatures(temps)
+    )
     bed_temp = round(temps.get("bed", 0))
-    nozzle_2_temp = round(temps.get("nozzle_2", 0)) if "nozzle_2" in temps else ""
     chamber_temp = round(temps.get("chamber", 0)) if "chamber" in temps else ""
+    chamber_target = round(temps.get("chamber_target", 0)) if "chamber_target" in temps else ""
 
-    # Auto-detect dual-nozzle printers from MQTT temperature data
-    if "nozzle_2" in temps and printer_id not in _nozzle_count_updated:
-        _nozzle_count_updated.add(printer_id)
-        # Update nozzle_count in database
-        async with async_session() as db:
-            from backend.app.models.printer import Printer
+    # Persist the actual number of reported toolheads. This keeps dual-nozzle
+    # Bambu behavior intact while allowing U1-style four-nozzle printers (and
+    # future Moonraker providers) to expose their real capability count.
+    nozzle_count = max((index for index, _value, _target in nozzle_temperatures), default=1)
+    if nozzle_count > 1 and printer_id not in _nozzle_count_updated:
+        try:
+            async with async_session() as db:
+                from backend.app.models.printer import Printer
 
-            result = await db.execute(select(Printer).where(Printer.id == printer_id))
-            printer = result.scalar_one_or_none()
-            if printer and printer.nozzle_count != 2:
-                printer.nozzle_count = 2
-                await db.commit()
-                logging.getLogger(__name__).info(
-                    f"Auto-detected dual-nozzle printer {printer_id}, updated nozzle_count=2"
-                )
+                result = await db.execute(select(Printer).where(Printer.id == printer_id))
+                printer = result.scalar_one_or_none()
+                if printer and printer.nozzle_count != nozzle_count:
+                    printer.nozzle_count = nozzle_count
+                    await db.commit()
+                    logging.getLogger(__name__).info(
+                        "Auto-detected %s-nozzle printer %s, updated nozzle_count=%s",
+                        nozzle_count,
+                        printer_id,
+                        nozzle_count,
+                    )
+            _nozzle_count_updated.add(printer_id)
+        except Exception:
+            logging.getLogger(__name__).warning(
+                "Could not persist auto-detected nozzle count for printer %s; will retry on the next status update",
+                printer_id,
+                exc_info=True,
+            )
 
     # Include target temps for heating phase detection
     bed_target = round(temps.get("bed_target", 0))
@@ -1378,7 +1632,7 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
     )
     status_key = (
         f"{state.connected}:{state.state}:{state.progress}:{state.layer_num}:"
-        f"{nozzle_temp}:{bed_temp}:{nozzle_2_temp}:{chamber_temp}:"
+        f"{nozzle_temperatures}:{bed_temp}:{chamber_temp}:{chamber_target}:"
         f"{state.stg_cur}:{bed_target}:{nozzle_target}:"
         f"{state.cooling_fan_speed}:{state.big_fan1_speed}:{state.big_fan2_speed}:"
         f"{state.chamber_light}:{state.active_extruder}:{state.tray_now}:{vt_tray_key}:"
@@ -1401,7 +1655,7 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
     # Check for progress milestone notifications (25%, 50%, 75%)
     logger = logging.getLogger(__name__)
     raw_progress = state.progress or 0
-    progress = effective_print_progress(state)
+    progress = milestone_progress(state, await _get_progress_milestone_mode())
     activity_progress = live_activity_progress(state)
     is_printing = bool(state.connected) and state.state in ("RUNNING", "PRINTING")
     provider = _provider_name_for_progress(printer_id)
@@ -1451,11 +1705,10 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
         if progress < 5:
             # Reset milestone tracking at the beginning of a print even while the
             # printer is already in RUNNING/PRINTING. Keep the almost-done sent
-            # flag until the job changes or becomes inactive so a transient
-            # same-job progress regression cannot send a duplicate.
+            # and first-layer sent flags until the job changes or becomes inactive
+            # so a transient same-job progress regression cannot send duplicates.
             _last_progress_milestone[printer_id] = 0
             _pending_progress_milestone.pop(printer_id, None)
-            _first_layer_notified[printer_id] = False
 
         if progress > 0:
             # Determine which milestone we've reached
@@ -2494,17 +2747,21 @@ async def _capture_snapshot_for_notification(printer_id: int, printer, logger) -
                 )
                 return None
 
-        # Try buffered frame from active stream
-        from backend.app.api.routes.camera import _active_chamber_streams, _active_streams, get_buffered_frame
+        # Reuse only a fresh buffered frame while a camera stream is active.
+        # A stalled stream must not attach an outdated image, and opening a
+        # competing socket can disconnect viewers on single-connection firmware.
+        from backend.app.api.routes.camera import is_stream_active, try_get_active_buffered_frame
 
-        active_for_printer = [k for k in _active_streams if k.startswith(f"{printer_id}-")]
-        active_chamber = [k for k in _active_chamber_streams if k.startswith(f"{printer_id}-")]
-        buffered_frame = get_buffered_frame(printer_id)
-
-        if (active_for_printer or active_chamber) and buffered_frame:
+        buffered_frame = try_get_active_buffered_frame(printer_id)
+        if buffered_frame:
             logger.info("[SNAPSHOT] Using buffered frame for printer %s: %s bytes", printer_id, len(buffered_frame))
             if len(buffered_frame) <= 2_500_000:
                 return _apply_camera_rotation(buffered_frame, printer, logger)
+        if is_stream_active(printer_id):
+            logger.warning(
+                "[SNAPSHOT] Active camera stream for printer %s has no fresh frame; skipping attachment", printer_id
+            )
+            return None
 
         # Fresh capture from printer camera
         logger.info("[SNAPSHOT] Capturing fresh frame for printer %s", printer_id)
@@ -2597,7 +2854,7 @@ async def _dispatch_user_print_email(
     """Send a user-specific print-completion email based on print status.
 
     Maps the normalised print status to the correct event type and delegates
-    to :meth:`NotificationService.send_user_print_email`.  A single helper
+    to `NotificationService.send_user_print_email`.  A single helper
     avoids duplicating the ``if status == "completed" / elif "failed" / elif
     "stopped"`` dispatch block at every call site.
 
@@ -2749,7 +3006,7 @@ async def on_print_start(printer_id: int, data: dict):
                     light_was_off = not client.state.chamber_light
                     if light_was_off:
                         logger.info("[PLATE CHECK] Turning on chamber light for printer %s", printer_id)
-                        client.set_chamber_light(True)
+                        await run_client_call(client, client.set_chamber_light, True)
                         # Wait for light to physically turn on and camera to adjust exposure
                         await asyncio.sleep(2.5)
 
@@ -2770,7 +3027,7 @@ async def on_print_start(printer_id: int, data: dict):
                 # Restore chamber light to original state
                 if light_was_off and client:
                     logger.info("[PLATE CHECK] Restoring chamber light to off for printer %s", printer_id)
-                    client.set_chamber_light(False)
+                    await run_client_call(client, client.set_chamber_light, False)
 
                 if not plate_result.needs_calibration and not plate_result.is_empty:
                     # Objects detected - pause the print!
@@ -2780,7 +3037,7 @@ async def on_print_start(printer_id: int, data: dict):
                     )
                     client = printer_manager.get_client(printer_id)
                     if client:
-                        client.pause_print()
+                        await run_client_call(client, client.pause_print)
                         logger.info("[PLATE CHECK] Print paused for printer %s", printer_id)
 
                     # Send notification about plate not empty
@@ -3515,11 +3772,23 @@ async def on_print_start(printer_id: int, data: dict):
                     extra_data=extra_data,
                 )
 
+                _apply_moonraker_details_to_archive(fallback_archive, file_metadata)
+
                 db.add(fallback_archive)
                 await db.commit()
                 await db.refresh(fallback_archive)
 
                 logger.info("Created fallback archive %s for %s (no 3MF available)", fallback_archive.id, print_name)
+
+                if file_metadata.get("source") == "moonraker_file_metadata" and file_metadata.get("thumbnail_path"):
+                    try:
+                        if await _store_moonraker_thumbnail(printer_id, fallback_archive, file_metadata, logger):
+                            await db.commit()
+                    except Exception as e:
+                        logger.debug("[MOONRAKER] Thumbnail for archive %s failed: %s", fallback_archive.id, e)
+
+                if printer.provider in {"klipper", "mainsail", "fluidd"} and filename:
+                    asyncio.create_task(_attach_moonraker_gcode(printer_id, fallback_archive.id, filename, logger))
 
                 if printer.provider == "prusalink" and not fallback_archive.filament_used_grams:
                     asyncio.create_task(
@@ -3705,6 +3974,12 @@ async def _list_timelapse_videos(printer) -> tuple[list[dict], str | None]:
 
     logger = logging.getLogger(__name__)
 
+    # Timelapse files are only reachable over Bambu FTP. Other providers
+    # (Moonraker/Klipper, PrusaLink, OctoPrint, Elegoo) must not be probed —
+    # it only produces FTP connection errors against the printer.
+    if not _should_attempt_bambu_ftp_archive(printer):
+        return [], None
+
     for timelapse_path in ["/timelapse", "/timelapse/video", "/record", "/recording"]:
         try:
             found_files = await list_files_async(
@@ -3739,6 +4014,11 @@ async def _capture_timelapse_baseline_at_start(printer, printer_id: int, logger:
     Bambu printers in LAN-only mode don't sync NTP, so mtime ordering is
     unreliable — the snapshot-diff approach sidesteps that entirely.
     """
+    if not _should_attempt_bambu_ftp_archive(printer):
+        logger.debug(
+            "[TIMELAPSE] Skipping timelapse baseline for non-Bambu provider %s", getattr(printer, "provider", None)
+        )
+        return
     try:
         baseline_files, _ = await _list_timelapse_videos(printer)
         _timelapse_baselines[printer_id] = {f.get("name", "") for f in baseline_files}
@@ -3786,6 +4066,16 @@ async def _scan_for_timelapse_with_retries(archive_id: int, baseline_names: set[
                 return
             if not archive.printer_id:
                 logger.warning("[TIMELAPSE] Archive %s has no printer, aborting", archive_id)
+                return
+
+            provider_result = await db.execute(select(Printer).where(Printer.id == archive.printer_id))
+            provider_printer = provider_result.scalar_one_or_none()
+            if provider_printer and not _should_attempt_bambu_ftp_archive(provider_printer):
+                logger.info(
+                    "[TIMELAPSE] Skipping printer timelapse scan for non-Bambu provider %s (archive %s)",
+                    getattr(provider_printer, "provider", None),
+                    archive_id,
+                )
                 return
 
             if baseline_names is not None:
@@ -3996,6 +4286,12 @@ async def on_print_running_observed(printer_id: int, data: dict):
     await _capture_timelapse_baseline_at_start(printer, printer_id, logger)
 
 
+# Statuses that end a print: they get an archive completed_at timestamp and
+# raise the plate-clear gate. "stopped" comes from polled providers
+# (PrusaLink/OctoPrint) and needs both, like "aborted" (PB-2).
+TERMINAL_PRINT_STATUSES = ("completed", "failed", "aborted", "cancelled", "stopped")
+
+
 async def on_print_complete(printer_id: int, data: dict):
     """Handle print completion - update the archive status."""
     import time
@@ -4055,7 +4351,7 @@ async def on_print_complete(printer_id: int, data: dict):
     # after a touchscreen-abort (#1171). Persisted to DB so the gate survives
     # Auto Off power cycles and Printbuddy restarts.
     _final_status = data.get("status", "completed")
-    if _final_status in ("completed", "failed", "aborted", "cancelled"):
+    if _final_status in TERMINAL_PRINT_STATUSES:
         printer_manager.set_awaiting_plate_clear(printer_id, True)
 
     # MQTT relay - publish print complete
@@ -4201,7 +4497,9 @@ async def on_print_complete(printer_id: int, data: dict):
                 result = await db.execute(select(Printer).where(Printer.id == printer_id))
                 printer = result.scalar_one_or_none()
 
-            if printer:
+            # Only Bambu printers are reached over FTP; other providers would
+            # just burn three connection-refused retries per extension here.
+            if printer and _should_attempt_bambu_ftp_archive(printer):
                 from backend.app.services.bambu_ftp import delete_file_async
 
                 # Try both .3mf and .gcode extensions — the printer may have either
@@ -4495,6 +4793,24 @@ async def on_print_complete(printer_id: int, data: dict):
 
     log_timing("Filament usage tracking")
 
+    # GyroidVault: add finished prints of imported models to their GyroidVault
+    # print history. Background + best effort; it checks the settings itself.
+    try:
+        from backend.app.services.gyroidvault_reporter import report_print_completion
+
+        _gv_printer = printer_manager.get_printer(printer_id)
+        asyncio.create_task(
+            report_print_completion(
+                printer_id=printer_id,
+                status=data.get("status"),
+                archive_id=archive_id,
+                queue_item_id=queue_item_id,
+                printer_name=_gv_printer.name if _gv_printer else None,
+            )
+        )
+    except Exception as e:
+        logger.debug("[GYROIDVAULT] Could not schedule print report: %s", e)
+
     if not archive_id:
         logger.warning("Could not find archive for print complete: filename=%s, subtask=%s", filename, subtask_name)
 
@@ -4624,9 +4940,7 @@ async def on_print_complete(printer_id: int, data: dict):
             await service.update_archive_status(
                 archive_id,
                 status=status,
-                completed_at=(
-                    datetime.now(timezone.utc) if status in ("completed", "failed", "aborted", "cancelled") else None
-                ),
+                completed_at=(datetime.now(timezone.utc) if status in TERMINAL_PRINT_STATUSES else None),
                 failure_reason=failure_reason,
             )
             logger.info(
@@ -4655,6 +4969,15 @@ async def on_print_complete(printer_id: int, data: dict):
         # Continue with other operations even if archive update fails
 
     log_timing("Archive status update")
+
+    # Remember how far a failed/stopped print got ("Stopped/Failed at" in the fail reason statistics).
+    try:
+        async with async_session() as db:
+            from backend.app.services.failure_progress import record_run_progress
+
+            await record_run_progress(db, printer_id, archive_id, data)
+    except Exception as e:
+        logger.warning("[FAIL_REASON] Failed to record print progress for archive %s: %s", archive_id, e)
 
     # Write independent print log entry (separate table, never touches archives)
     try:
@@ -4723,6 +5046,11 @@ async def on_print_complete(printer_id: int, data: dict):
         logger.warning("[PRINT_LOG] Failed to write log entry for archive %s: %s", archive_id, e)
 
     log_timing("Print log entry")
+
+    # Take the new print log entry over into the fail reason statistics (background, never raises).
+    from backend.app.services.failure_history_import import schedule_failure_history_sync
+
+    schedule_failure_history_sync("print complete", archive_id)
 
     # Run slow operations as background tasks to avoid blocking the event loop
     # These operations can take 5-10+ seconds and would freeze the UI if awaited
@@ -4838,13 +5166,12 @@ async def on_print_complete(printer_id: int, data: dict):
                         if archive:
                             import uuid
                             from datetime import datetime
-                            from pathlib import Path
 
-                            if archive.file_path:
-                                archive_dir = app_settings.base_dir / Path(archive.file_path).parent
-                            else:
-                                logger.warning("[PHOTO-BG] Archive %s has no file_path, using fallback dir", archive_id)
-                                archive_dir = app_settings.archive_dir / str(archive.id)
+                            from backend.app.services.archive import resolve_archive_dir
+
+                            if not archive.file_path:
+                                logger.info("[PHOTO-BG] Archive %s has no file_path, using fileless dir", archive_id)
+                            archive_dir = resolve_archive_dir(archive)
                             photo_filename = None
 
                             from backend.app.services.elegoo_camera import (
@@ -5041,14 +5368,9 @@ async def on_print_complete(printer_id: int, data: dict):
 
                             # Read finish photo bytes for image attachment (e.g. Pushover)
                             try:
-                                from pathlib import Path
+                                from backend.app.services.archive import resolve_archive_photo_path
 
-                                photo_path = (
-                                    app_settings.base_dir
-                                    / Path(archive.file_path).parent
-                                    / "photos"
-                                    / finish_photo_filename
-                                )
+                                photo_path = resolve_archive_photo_path(archive, finish_photo_filename)
                                 if photo_path.exists():
                                     photo_bytes = await asyncio.to_thread(photo_path.read_bytes)
                                     if len(photo_bytes) <= 2_500_000:
@@ -5919,6 +6241,14 @@ async def lifespan(app: FastAPI):
     async with async_session() as db:
         await init_printer_connections(db)
 
+    # Recover PrusaLink printers that were unavailable during startup or later
+    # went offline. The worker itself is provider-restricted, so it cannot
+    # replace a Bambu MQTT client and stall the API event loop.
+    from backend.app.services.printer_reconnect import PrinterReconnectService
+
+    printer_reconnect_service = PrinterReconnectService(printer_manager, async_session)
+    printer_reconnect_service.start()
+
     # Auto-connect to Spoolman if enabled
     async with async_session() as db:
         from backend.app.api.routes.settings import get_setting
@@ -5975,6 +6305,7 @@ async def lifespan(app: FastAPI):
     # Start the local backup scheduler
     await local_backup_service.start_scheduler()
     await obico_detection_service.start()
+    await octoeverywhere_detection_service.start()
 
     # Start the library trash sweeper (#1008)
     await library_trash_service.start_scheduler()
@@ -6015,9 +6346,15 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logging.warning("Failed to sync virtual printers: %s", e)
 
+    # Fail reason statistics: take over failed prints from the print log (background, never raises).
+    from backend.app.services.failure_history_import import schedule_failure_history_sync
+
+    schedule_failure_history_sync("startup")
+
     yield
 
     # Shutdown
+    await printer_reconnect_service.stop()
     print_scheduler.stop()
     await background_dispatch.stop()
     smart_plug_manager.stop_scheduler()
@@ -6028,6 +6365,7 @@ async def lifespan(app: FastAPI):
     library_trash_service.stop_scheduler()
     archive_purge_service.stop_scheduler()
     obico_detection_service.stop()
+    octoeverywhere_detection_service.stop()
     stop_ams_history_recording()
     stop_runtime_tracking()
     stop_camera_cleanup()
@@ -6113,6 +6451,9 @@ PUBLIC_API_PREFIXES = [
     "/api/v1/ws",
     # OIDC authorize redirects — include provider_id in path
     "/api/v1/auth/oidc/authorize/",
+    # Moonraker/OctoPrint-compatible virtual printer upload endpoint (#52).
+    # Slicers authenticate with the VP's own API key, checked by the route.
+    "/api/v1/vp-host/",
 ]
 
 # Route patterns that are public (read-only display data)
@@ -6140,6 +6481,16 @@ PUBLIC_API_PATTERNS = [
     # The nonce itself is the credential: 32-byte random, single-use, ~30s TTL.
     "/obico/cached-frame/",  # /obico/cached-frame/{nonce}
 ]
+
+
+def is_public_stream_image_path(path: str) -> bool:
+    """Return whether a token-gated browser image URL may bypass JWT middleware.
+
+    The endpoint itself validates its ``?token=`` via
+    ``RequireCameraStreamTokenIfAuthEnabled``. Keep this exact match narrow so
+    no other printer route becomes reachable without bearer authentication.
+    """
+    return re.fullmatch(r"/api/v1/printers/\d+/image", path) is not None
 
 
 _security_headers_logger = logging.getLogger("backend.app.main.security_headers")
@@ -6319,22 +6670,30 @@ async def auth_middleware(request, call_next):
         if pattern in path:
             return await call_next(request)
 
+    # Token-gated printer images are loaded through <img>, which cannot attach
+    # an Authorization header. The endpoint's own stream-token dependency is
+    # the credential check for this narrowly defined URL.
+    if is_public_stream_image_path(path):
+        return await call_next(request)
+
     # Check if auth is enabled
     try:
         async with async_session() as db:
             from backend.app.core.auth import is_auth_enabled
 
             auth_enabled = await is_auth_enabled(db)
-
-        if not auth_enabled:
-            # Auth disabled, allow all requests
-            return await call_next(request)
     except Exception:
         logging.getLogger(__name__).exception("Failed to determine authentication state; denying request")
         return JSONResponse(
             status_code=503,
             content={"detail": "Authentication state unavailable"},
         )
+
+    if not auth_enabled:
+        # Auth disabled, allow all requests. Kept outside the try above so an
+        # error raised by the route itself is not misreported as an auth
+        # failure (and turned into a 503).
+        return await call_next(request)
 
     # Auth is enabled - require valid token
     auth_header = request.headers.get("Authorization")
@@ -6496,12 +6855,14 @@ app.include_router(maintenance.router, prefix=app_settings.api_prefix)
 app.include_router(camera.router, prefix=app_settings.api_prefix)
 app.include_router(external_links.router, prefix=app_settings.api_prefix)
 app.include_router(projects.router, prefix=app_settings.api_prefix)
+app.include_router(project_plan.router, prefix=app_settings.api_prefix)
 app.include_router(library.router, prefix=app_settings.api_prefix)
 app.include_router(library_trash.router, prefix=app_settings.api_prefix)
 app.include_router(slice_jobs.router, prefix=app_settings.api_prefix)
 app.include_router(slicer_presets.router, prefix=app_settings.api_prefix)
 app.include_router(archive_purge.router, prefix=app_settings.api_prefix)
 app.include_router(makerworld.router, prefix=app_settings.api_prefix)
+app.include_router(gyroidvault.router, prefix=app_settings.api_prefix)
 app.include_router(api_keys.router, prefix=app_settings.api_prefix)
 app.include_router(webhook.router, prefix=app_settings.api_prefix)
 app.include_router(ams_history.router, prefix=app_settings.api_prefix)
@@ -6514,9 +6875,14 @@ app.include_router(firmware.router, prefix=app_settings.api_prefix)
 app.include_router(github_backup.router, prefix=app_settings.api_prefix)
 app.include_router(local_backup.router, prefix=app_settings.api_prefix)
 app.include_router(obico.router, prefix=app_settings.api_prefix)
+app.include_router(octoeverywhere.router, prefix=app_settings.api_prefix)
 app.include_router(open_filament_database.router, prefix=app_settings.api_prefix)
 app.include_router(metrics.router, prefix=app_settings.api_prefix)
 app.include_router(virtual_printers.router, prefix=app_settings.api_prefix)
+app.include_router(vp_host.router, prefix=app_settings.api_prefix)
+app.include_router(vp_device.router, prefix=app_settings.api_prefix)
+app.include_router(custom_failure_reasons.router, prefix=app_settings.api_prefix)
+app.include_router(custom_failure_reports.router, prefix=app_settings.api_prefix)
 
 
 # Serve static files (React build)

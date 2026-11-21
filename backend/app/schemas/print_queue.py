@@ -48,6 +48,8 @@ class PrintQueueItemCreate(BaseModel):
     quantity: int = 1
     # Project to associate the resulting archive with
     project_id: int | None = None
+    # Project plan row ("job" plate) this item is queued for
+    plan_item_id: int | None = None
 
 
 class PrintQueueItemUpdate(BaseModel):
@@ -72,6 +74,8 @@ class PrintQueueItemUpdate(BaseModel):
     use_ams: bool | None = None
     # Auto-print G-code injection
     gcode_injection: bool | None = None
+    # Project link (explicit null unlinks)
+    project_id: int | None = None
 
 
 class PrintQueueItemResponse(BaseModel):
@@ -138,6 +142,10 @@ class PrintQueueItemResponse(BaseModel):
 
     # Batch grouping
     batch_id: int | None = None
+    # Project "job" plan row this item belongs to
+    project_id: int | None = None
+    project_name: str | None = None
+    plan_item_id: int | None = None
     batch_name: str | None = None
 
     # Shortest-job-first scheduling
@@ -196,6 +204,8 @@ class PrintQueueBulkUpdate(BaseModel):
     use_ams: bool | None = None
     # Auto-print G-code injection
     gcode_injection: bool | None = None
+    # Project link (explicit null unlinks)
+    project_id: int | None = None
 
 
 class PrintQueueBulkUpdateResponse(BaseModel):
@@ -203,6 +213,28 @@ class PrintQueueBulkUpdateResponse(BaseModel):
 
     updated_count: int
     skipped_count: int  # Items that were not pending
+    message: str
+
+
+class PrintQueueProjectLink(BaseModel):
+    """Link queue items (any status) to a project, optionally as job-plan rows."""
+
+    item_ids: list[int]
+    project_id: int | None = None  # None = unlink
+    # Also add the items' files to the project's job plan. Archive-only
+    # items (e.g. virtual-printer uploads) are copied into the File Manager
+    # first, because plan rows reference File Manager files.
+    add_to_plan: bool = False
+    # Optional File Manager folder for files copied out of archives
+    folder_id: int | None = None
+
+
+class PrintQueueProjectLinkResponse(BaseModel):
+    updated_count: int
+    skipped_count: int
+    plan_items_created: int = 0
+    plan_items_linked: int = 0
+    library_files_created: int = 0
     message: str
 
 

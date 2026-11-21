@@ -3,6 +3,9 @@
 Tests the /api/v1/metrics endpoint for Prometheus scraping.
 """
 
+from types import SimpleNamespace
+from unittest.mock import patch
+
 import pytest
 from httpx import AsyncClient
 
@@ -112,6 +115,48 @@ class TestMetricsAPI:
         # Should still have system metrics
         assert "printbuddy_printers_total" in content
         assert "printbuddy_printers_connected" in content
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_metrics_emits_every_reported_nozzle(self, async_client: AsyncClient, printer_factory):
+        """Multi-toolhead printers export one current and target series per nozzle."""
+        printer = await printer_factory(name="Snapmaker U1", model="Snapmaker U1")
+        status = SimpleNamespace(
+            connected=True,
+            state="RUNNING",
+            progress=42.0,
+            remaining_time=8,
+            layer_num=4,
+            total_layers=20,
+            temperatures={
+                "nozzle": 201.0,
+                "nozzle_target": 210.0,
+                "nozzle_2": 202.0,
+                "nozzle_2_target": 211.0,
+                "nozzle_3": 203.0,
+                "nozzle_3_target": 212.0,
+                "nozzle_4": 204.0,
+                "nozzle_4_target": 213.0,
+            },
+            wifi_signal=None,
+        )
+        await async_client.put("/api/v1/settings/", json={"prometheus_enabled": True, "prometheus_token": ""})
+
+        with patch(
+            "backend.app.api.routes.metrics.printer_manager.get_all_statuses", return_value={printer.id: status}
+        ):
+            response = await async_client.get("/api/v1/metrics")
+
+        assert response.status_code == 200
+        for nozzle_index, temperature, target in (
+            (0, 201.0, 210.0),
+            (1, 202.0, 211.0),
+            (2, 203.0, 212.0),
+            (3, 204.0, 213.0),
+        ):
+            nozzle_label = f'printer_id="{printer.id}",printer_name="Snapmaker U1",serial="{printer.serial_number}",nozzle="{nozzle_index}"'
+            assert f"printbuddy_nozzle_temp_celsius{{{nozzle_label}}} {temperature:.1f}" in response.text
+            assert f"printbuddy_nozzle_target_celsius{{{nozzle_label}}} {target:.1f}" in response.text
 
     # ========================================================================
     # Settings persistence

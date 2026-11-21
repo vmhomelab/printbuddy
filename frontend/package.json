@@ -29,12 +29,13 @@
     "@tiptap/react": "^3.30.5",
     "@tiptap/starter-kit": "^3.30.5",
     "@types/three": "^0.181.0",
-    "dompurify": "^3.4.0",
+    "dompurify": "^3.4.17",
     "gcode-preview": "^2.18.0",
     "i18next": "25.6.3",
     "i18next-browser-languagedetector": "^8.2.0",
     "jszip": "^3.10.1",
     "lucide-react": "^0.555.0",
+    "qrcode": "1.5.4",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "react-i18next": "^16.3.5",
@@ -55,10 +56,11 @@
     "@testing-library/react": "^16.0.0",
     "@testing-library/user-event": "^14.5.0",
     "@types/node": "^24.10.1",
+    "@types/qrcode": "1.5.5",
     "@types/react": "^19.2.5",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.1",
-    "@vitest/coverage-v8": "^3.2.4",
+    "@vitest/coverage-v8": "^4.1.12",
     "autoprefixer": "^10.4.22",
     "baseline-browser-mapping": "^2.9.19",
     "eslint": "^9.39.1",
@@ -72,6 +74,6 @@
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.46.4",
     "vite": "^7.3.2",
-    "vitest": "^3.2.4"
+    "vitest": "^4.1.12"
   }
 }

@@ -28,9 +28,10 @@ from backend.app.models.user import User
 from backend.app.schemas.archive import ArchiveResponse, ArchiveSlim, ArchiveStats, ArchiveUpdate, ReprintRequest
 from backend.app.schemas.print_log import PrintLogResponse
 from backend.app.schemas.slicer import SliceRequest
-from backend.app.services.archive import ArchiveService
+from backend.app.services.archive import ArchiveService, resolve_archive_dir, resolve_archive_photo_path
 from backend.app.utils.http import build_content_disposition
 from backend.app.utils.threemf_tools import (
+    discover_plate_indices,
     extract_embedded_presets_from_3mf,
     extract_nozzle_mapping_from_3mf,
     extract_project_filaments_from_3mf,
@@ -1374,6 +1375,12 @@ async def update_archive(
 
     await db.commit()
 
+    if to_mirror:
+        # Fail reason statistics follow reasons set here (background, never raises).
+        from backend.app.services.failure_history_import import schedule_failure_history_sync
+
+        schedule_failure_history_sync("archive edited", archive_id)
+
     # Re-fetch with relationships loaded after commit
     result = await db.execute(
         select(PrintArchive)
@@ -2420,10 +2427,10 @@ async def upload_photo(
     if not file.filename or not file.filename.lower().endswith((".jpg", ".jpeg", ".png", ".webp")):
         raise HTTPException(400, "File must be an image (.jpg, .jpeg, .png, .webp)")
 
-    # Get archive directory
-    archive_dir = settings.base_dir / Path(archive.file_path).parent
+    # Get archive directory (fileless fallback archives get their own folder)
+    archive_dir = resolve_archive_dir(archive)
     photos_dir = archive_dir / "photos"
-    photos_dir.mkdir(exist_ok=True)
+    photos_dir.mkdir(parents=True, exist_ok=True)
 
     # Generate unique filename
     import uuid
@@ -2463,8 +2470,7 @@ async def get_photo(
     if not archive:
         raise HTTPException(404, "Archive not found")
 
-    archive_dir = settings.base_dir / Path(archive.file_path).parent
-    photo_path = archive_dir / "photos" / filename
+    photo_path = resolve_archive_photo_path(archive, filename)
 
     if not photo_path.exists():
         raise HTTPException(404, "Photo not found")
@@ -2499,8 +2505,7 @@ async def delete_photo(
         raise HTTPException(404, "Photo not found")
 
     # Delete file
-    archive_dir = settings.base_dir / Path(archive.file_path).parent
-    photo_path = archive_dir / "photos" / filename
+    photo_path = resolve_archive_photo_path(archive, filename)
     if photo_path.exists():
         photo_path.unlink()
 
@@ -3080,45 +3085,10 @@ async def get_archive_plates(
             namelist = zf.namelist()
             embedded_presets = extract_embedded_presets_from_3mf(zf)
 
-            # Find all plate gcode files to determine available plates
+            # Keep gcode_files for has_gcode below; indices come from the
+            # shared helper (gcode → preview png/json → model_settings).
             gcode_files = [n for n in namelist if n.startswith("Metadata/plate_") and n.endswith(".gcode")]
-
-            # If no gcode is present (source-only or unsliced), fall back to plate JSON/PNG
-            plate_indices: list[int] = []
-            if gcode_files:
-                # Extract plate indices from gcode filenames
-                for gf in gcode_files:
-                    # "Metadata/plate_5.gcode" -> 5
-                    try:
-                        # Remove "Metadata/plate_" and ".gcode"
-                        plate_str = gf[15:-6]
-                        plate_indices.append(int(plate_str))
-                    except ValueError:
-                        pass  # Skip gcode file with non-numeric plate index
-            else:
-                plate_json_files = [n for n in namelist if n.startswith("Metadata/plate_") and n.endswith(".json")]
-                plate_png_files = [
-                    n
-                    for n in namelist
-                    if n.startswith("Metadata/plate_")
-                    and n.endswith(".png")
-                    and "_small" not in n
-                    and "no_light" not in n
-                ]
-                plate_name_candidates = plate_json_files + plate_png_files
-                plate_re = re.compile(r"^Metadata/plate_(\d+)\.(json|png)$")
-                seen_indices: set[int] = set()
-                for name in plate_name_candidates:
-                    match = plate_re.match(name)
-                    if match:
-                        try:
-                            index = int(match.group(1))
-                        except ValueError:
-                            continue
-                        if index in seen_indices:
-                            continue
-                        seen_indices.add(index)
-                        plate_indices.append(index)
+            plate_indices = discover_plate_indices(zf)
 
             if not plate_indices:
                 # No plate metadata found
@@ -3127,9 +3097,9 @@ async def get_archive_plates(
                     "filename": archive.filename,
                     "plates": [],
                     "is_multi_plate": False,
+                    "embedded_printer": embedded_presets["printer"],
+                    "embedded_process": embedded_presets["process"],
                 }
-
-            plate_indices.sort()
 
             # Parse model_settings.config for plate names + object assignments
             # Plate names are stored with plater_id and plater_name keys
@@ -3405,6 +3375,12 @@ async def _try_preview_slice_filaments(
         file_bytes = file_path.read_bytes()
     except OSError:
         return None
+    # Mirror library preview: patch embedded process/printer compat +
+    # sentinel keys so Orca 2.5 accepts converted MakerWorld 3MFs.
+    if file_path.suffix.lower() == ".3mf":
+        from backend.app.api.routes.library import _sanitize_project_settings_sentinels
+
+        file_bytes = _sanitize_project_settings_sentinels(file_bytes)
     return await get_preview_filaments(
         kind=kind,
         source_id=source_id,

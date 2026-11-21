@@ -196,8 +196,8 @@ describe('ToastContext viewport suppression', () => {
       </ToastProvider>
     );
 
-    // Toast viewport is the fixed-position container with bottom-4 right-20.
-    const findViewport = () => container.querySelector('div.fixed.bottom-4.right-20');
+    // Toast viewport is the fixed-position container marked .toast-viewport.
+    const findViewport = () => container.querySelector('div.toast-viewport');
     expect(findViewport()?.className).not.toContain('hidden');
 
     act(() => {

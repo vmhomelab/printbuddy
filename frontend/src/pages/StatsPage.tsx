@@ -38,6 +38,7 @@ import { api, type ArchiveSlim } from '../api/client';
 import { PrintCalendar } from '../components/PrintCalendar';
 import { FilamentTrends } from '../components/FilamentTrends';
 import { Dashboard, type DashboardWidget } from '../components/Dashboard';
+import { FailReasonStatisticsWidget } from '../components/FailReasonStatisticsWidget';
 import { getCurrencySymbol } from '../utils/currency';
 import { formatWeight } from '../utils/weight';
 import { parseUTCDate, formatDuration } from '../utils/date';
@@ -1145,6 +1146,13 @@ export function StatsPage() {
       id: 'filament-trends',
       title: t('stats.filamentTrends'),
       component: <FilamentTrendsWidget archives={archives || []} currency={currency} dateFrom={effectiveDateRange.dateFrom} dateTo={effectiveDateRange.dateTo} />,
+      defaultSize: 4,
+    },
+    {
+      // User-reported reasons ("Report failed print"); independent of 'failure-analysis'
+      id: 'fail-reason-statistics',
+      title: t('customFailure.widget.title'),
+      component: <FailReasonStatisticsWidget dateFrom={effectiveDateRange.dateFrom} dateTo={effectiveDateRange.dateTo} />,
       defaultSize: 4,
     },
   ];
