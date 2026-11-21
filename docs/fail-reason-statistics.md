@@ -82,6 +82,9 @@ with several workers.
   overwrites it. A person's own report for the same run always wins.
 - A withdrawn imported report is kept as an invisible marker, so the next sync doesn't
   bring it back.
+- If a print is no longer failed/aborted (e.g. its status was set back to "completed" in
+  the Edit Archive dialog), its imported report is removed again; a person's own report
+  stays.
 
 **Stopped/Failed at:** when a print ends without completing, its last progress is stored
 (Bambu `last_progress`, Moonraker `progress`). Prints that ended before this feature

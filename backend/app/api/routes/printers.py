@@ -4535,6 +4535,8 @@ async def ams_load(
     if not success:
         if getattr(client, "is_k2_openhost_cfs", lambda: False)() is True:
             raise HTTPException(400, getattr(client, "last_error", None) or "CFS load failed")
+        if getattr(client, "is_qidi_box", lambda: False)() is True:
+            raise HTTPException(400, getattr(client, "last_error", None) or "QIDI Box load failed")
         provider = str(getattr(printer, "provider", "") or "").lower()
         model = str(getattr(printer, "model", "") or "").lower()
         if provider in {"klipper", "mainsail", "fluidd"} and "creality k2" in model and tray_id in range(16):
@@ -4544,7 +4546,9 @@ async def ams_load(
             )
         raise HTTPException(500, "Failed to send load command")
 
-    if ams3h_slot is not None:
+    if getattr(client, "is_qidi_box", lambda: False)() is True and tray_id in range(16):
+        target = f"QIDI Box slot {tray_id // 4 + 1}{'ABCD'[tray_id % 4]}"
+    elif ams3h_slot is not None:
         target = f"AMS 3H slot {ams3h_slot[1] + 1}"
     elif tray_id == 254:
         target = "external spool"
@@ -4583,6 +4587,8 @@ async def ams_unload(
     if not success:
         if getattr(client, "is_k2_openhost_cfs", lambda: False)() is True:
             raise HTTPException(400, getattr(client, "last_error", None) or "CFS unload failed")
+        if getattr(client, "is_qidi_box", lambda: False)() is True:
+            raise HTTPException(400, getattr(client, "last_error", None) or "QIDI Box unload failed")
         model = str(getattr(printer, "model", "") or "").lower()
         if (
             provider in {"klipper", "mainsail", "fluidd"}
@@ -4596,6 +4602,8 @@ async def ams_unload(
             )
         raise HTTPException(500, "Failed to send unload command")
 
+    if getattr(client, "is_qidi_box", lambda: False)() is True:
+        return {"success": True, "message": "Unloading filament from the QIDI Box"}
     if tray_id is not None and provider in {"klipper", "mainsail", "fluidd"}:
         target = f"CFS T{tray_id // 4 + 1} slot {tray_id % 4 + 1}"
         return {"success": True, "message": f"Unloading filament from {target}"}

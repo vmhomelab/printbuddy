@@ -568,3 +568,68 @@ class TestProgressCleanup:
         assert await self._progress_archives(db_session) == {archive_id, 99999}
         await sync_failure_history(db_session)  # startup
         assert await self._progress_archives(db_session) == {archive_id}
+
+
+class TestStatusChangedBack:
+    @staticmethod
+    async def _set_status(async_client, archive_id: int, status: str) -> None:
+        # The scheduled background sync is run explicitly by the tests below.
+        with patch("backend.app.services.failure_history_import.schedule_failure_history_sync"):
+            response = await async_client.patch(f"/api/v1/archives/{archive_id}", json={"status": status})
+        assert response.status_code == 200, response.text
+
+    @staticmethod
+    async def _reports(db_session) -> dict[int, CustomFailureReport]:
+        db_session.expire_all()
+        return {r.archive_id: r for r in (await db_session.execute(select(CustomFailureReport))).scalars()}
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_imported_report_goes_when_the_print_is_completed_again(
+        self, async_client, printer_factory, archive_factory, db_session
+    ):
+        printer = await printer_factory(name="Status back")
+        auto = await _failed(archive_factory, printer.id, 1, failure_reason="Clogged nozzle")
+        person = await _failed(archive_factory, printer.id, 2, failure_reason="Layer shift")
+        auto_id, person_id = auto.id, person.id
+        await sync_failure_history(db_session)
+        response = await async_client.post(
+            f"{API}/",
+            json={"printer_id": printer.id, "archive_id": person_id, "custom_failure_reason": "fail_reason_02"},
+        )
+        assert response.status_code == 200
+        assert set(await self._reports(db_session)) == {auto_id, person_id}
+
+        await self._set_status(async_client, auto_id, "completed")
+        await self._set_status(async_client, person_id, "completed")
+        counts = await sync_failure_history(db_session, [auto_id, person_id])  # what the Edit Archive trigger runs
+
+        assert counts["removed"] == 1
+        reports = await self._reports(db_session)
+        assert set(reports) == {person_id}  # a person's own report stays
+        assert reports[person_id].source == "manual"
+
+        # Set back to failed: the print is imported again.
+        await self._set_status(async_client, auto_id, "failed")
+        assert (await sync_failure_history(db_session, [auto_id]))["created"] == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_full_sync_cleans_up_too_and_keeps_withdrawn_markers(
+        self, async_client, printer_factory, archive_factory, db_session
+    ):
+        printer = await printer_factory(name="Status back full")
+        completed = await _failed(archive_factory, printer.id, 1)
+        withdrawn = await _failed(archive_factory, printer.id, 2, failure_reason="Clogged nozzle")
+        completed_id, withdrawn_id = completed.id, withdrawn.id
+        await sync_failure_history(db_session)
+        reports = await self._reports(db_session)
+        assert (await async_client.delete(f"{API}/{reports[withdrawn_id].id}")).status_code == 200
+
+        await self._set_status(async_client, completed_id, "completed")
+        await self._set_status(async_client, withdrawn_id, "completed")
+        assert (await sync_failure_history(db_session))["removed"] == 1  # startup
+
+        reports = await self._reports(db_session)
+        assert set(reports) == {withdrawn_id}
+        assert reports[withdrawn_id].dismissed_at is not None  # the withdrawal is still remembered

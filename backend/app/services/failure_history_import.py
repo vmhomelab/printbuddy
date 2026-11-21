@@ -19,6 +19,8 @@ Rules:
 * Failed runs without any known cause land in "unassigned".
 * A withdrawn imported report stays as an invisible marker (dismissed_at), so it
   doesn't come back.
+* If a print is no longer failed/aborted (e.g. its status was set back to
+  "completed" in Edit Archive), its automatically imported report is removed.
 """
 
 import asyncio
@@ -156,6 +158,32 @@ async def sync_failure_history(db: AsyncSession, archive_ids: Collection[int] | 
         return await _sync(db, None if archive_ids is None else set(archive_ids))
 
 
+async def _remove_reports_no_longer_failed(db: AsyncSession, scope: set[int] | None) -> int:
+    """Remove imported reports whose log entry is no longer failed/aborted. Returns how many (caller commits).
+
+    The main sync only reads failed/aborted entries, so a print whose status was
+    changed back (e.g. to "completed" in Edit Archive) would otherwise keep its
+    report forever. A person's own report stays, and so does a withdrawn marker.
+    """
+    query = (
+        select(CustomFailureReport, PrintLogEntry)
+        .join(PrintLogEntry, PrintLogEntry.id == CustomFailureReport.print_log_entry_id)
+        .where(
+            PrintLogEntry.status.not_in(IMPORTED_STATUSES),
+            CustomFailureReport.source != SOURCE_MANUAL,
+            CustomFailureReport.dismissed_at.is_(None),
+        )
+    )
+    if scope is not None:
+        query = query.where(PrintLogEntry.archive_id.in_(scope))
+    removed = 0
+    for report, entry in (await db.execute(query)).all():
+        if _same_run(report, entry):  # a reused id belongs to another run; leave that report alone
+            await db.delete(report)
+            removed += 1
+    return removed
+
+
 async def _sync(db: AsyncSession, scope: set[int] | None) -> dict:
     counts = {"created": 0, "updated": 0, "linked": 0, "removed": 0}
     if scope is not None and not scope:
@@ -164,6 +192,10 @@ async def _sync(db: AsyncSession, scope: set[int] | None) -> dict:
         # Full sync (startup): also drop progress rows of archives that are gone.
         if await delete_orphaned_progress(db):
             await db.commit()
+    counts["removed"] = await _remove_reports_no_longer_failed(db, scope)
+    if counts["removed"]:
+        await db.commit()
+        logger.info("Failure history sync: removed %d report(s) of prints that are no longer failed", counts["removed"])
     entry_query = select(PrintLogEntry).where(PrintLogEntry.status.in_(IMPORTED_STATUSES))
     if scope is not None:
         entry_query = entry_query.where(PrintLogEntry.archive_id.in_(scope))
