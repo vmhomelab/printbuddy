@@ -1,5 +1,5 @@
-import pytest
 import httpx
+import pytest
 
 from backend.app.services.printer_providers import _http_common, prusalink
 from backend.app.services.printer_providers.prusalink import PrusaLinkPrinterClient, _normalize_prusalink_file_meta
