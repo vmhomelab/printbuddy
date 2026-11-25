@@ -83,6 +83,23 @@ export function withStreamToken(url: string): string {
   return `${url}${sep}token=${encodeURIComponent(streamToken)}`;
 }
 
+// WebSocket auth: browsers can't set headers on the handshake, so the token
+// rides along as a second subprotocol. The server answers with only
+// "printbuddy.v1" (see backend/app/core/auth.py, WS_SUBPROTOCOL).
+const WS_SUBPROTOCOL = 'printbuddy.v1';
+
+/** Open the live-update WebSocket, authenticated with the current token when there is one. */
+export function openAuthenticatedWebSocket(url: string): WebSocket {
+  if (!authToken) return new WebSocket(url);
+  try {
+    return new WebSocket(url, [WS_SUBPROTOCOL, `bearer.${authToken}`]);
+  } catch {
+    // A token with characters not allowed in a subprotocol makes the constructor
+    // throw; connect without it so auth-disabled servers keep working.
+    return new WebSocket(url);
+  }
+}
+
 function parseContentDispositionFilename(header: string | null): string | null {
   if (!header) return null;
   // RFC 5987: filename*=utf-8''percent-encoded-name
@@ -286,6 +303,7 @@ export interface Printer {
   provider_options: string | null;
   model: string | null;
   location: string | null;  // Group/location name
+  power_watts?: number | null;  // Optional avg power while printing (W), used for energy cost estimates
   custom_image_filename: string | null;
   nozzle_count: number;  // 1 or 2, auto-detected from MQTT
   is_active: boolean;
@@ -357,7 +375,9 @@ export interface AMSUnit {
   dry_status: number;     // 0=Off, 1=Checking, 2=Drying, 3=Cooling, 4=Stopping, 5=Error
   dry_sub_status: number; // 0=Off, 1=Heating, 2=Dehumidify
   dry_sf_reason: number[]; // Cannot-dry reasons (1=InsufficientPower, 8=NeedPluginPower)
-  module_type: string;    // "ams", "n3f", "n3s"
+  module_type: string;    // "ams", "n3f", "n3s", "n10a" (the H3C's AMS 3H)
+  ams_type?: number | null;  // Bambu Studio's AMS type; 6 = AMS 3H (H3C, nine slots)
+  dry_zone_slots?: number[]; // AMS 3H: the slots (0-8) of the zone that can dry
 }
 
 export interface NozzleInfo {
@@ -534,6 +554,7 @@ export interface PrinterCreate {
   provider_options?: string | null;
   model?: string;
   location?: string;
+  power_watts?: number | null;
   auto_archive?: boolean;
   reconnect_interval_seconds?: number;
   external_camera_url?: string | null;
@@ -885,6 +906,7 @@ export interface Project {
   url: string | null;  // External link rendered next to project name on the card (#1155)
   cover_image_filename: string | null;  // Filename within project attachments dir (#1155)
   order_number?: string | null;  // External order / tracking number (e.g. Etsy)
+  waste_percent?: number | null;  // Material waste / purge surcharge (%)
 }
 
 export interface ProjectAttachment {
@@ -925,6 +947,7 @@ export interface ProjectListItem {
   order_number?: string | null;
   plan_total_plates?: number;
   plan_completed_plates?: number;
+  estimated_costs?: CostTotals | null;  // Planned production cost
 }
 
 export interface ProjectCreate {
@@ -959,6 +982,81 @@ export interface ProjectUpdate {
   parent_id?: number;
   url?: string | null;  // #1155 — explicit null clears the URL
   order_number?: string | null;  // explicit null clears it
+  waste_percent?: number | null;  // explicit null clears it
+}
+
+// Production cost estimate of a project ("Job")
+export interface CostTotals {
+  material: number;
+  energy: number;
+  bom: number;
+  total: number;
+}
+
+export interface CostMaterialRow {
+  type: string;
+  color: string;
+  color_name: string | null;
+  planned_grams: number;
+  completed_grams: number;
+  remaining_grams: number;
+  price_per_kg: number;
+  source: 'spools' | 'catalog' | 'default';
+  spools: Array<{ id: number; brand: string | null; color_name: string | null; cost_per_kg: number; remaining_grams: number }>;
+  planned_cost: number;
+  completed_cost: number;
+  remaining_cost: number;
+}
+
+export interface CostEnergyRow {
+  key: string;
+  kind: 'printer' | 'model' | 'unassigned';
+  label: string | null;
+  plates: number;
+  planned_hours: number;
+  remaining_hours: number;
+  kwh_per_hour: number | null;
+  source: 'power_setting' | 'history' | 'fleet_average' | 'none';
+  source_detail: string | null;
+  history_prints: number;
+  planned_kwh: number;
+  planned_cost: number;
+  remaining_cost: number;
+}
+
+export interface CostBomRow {
+  id: number;
+  name: string;
+  quantity_needed: number;
+  quantity_acquired: number;
+  unit_price: number;
+  cost: number;
+}
+
+export interface CostWarning {
+  code: 'unestimated_plates' | 'default_price' | 'no_energy_rate' | 'bom_without_price';
+  count?: number;
+  type?: string;
+  color?: string;
+  color_name?: string | null;
+}
+
+export interface ProjectCosts {
+  currency: string;
+  has_plan: boolean;
+  energy_cost_per_kwh: number;
+  waste_percent: number;
+  budget: number | null;
+  total_plates: number;
+  completed_plates: number;
+  planned: CostTotals;
+  incurred: CostTotals;
+  remaining: CostTotals;
+  material: { rows: CostMaterialRow[]; planned_grams: number; planned_cost: number; waste_cost: number; total_cost: number };
+  energy: { rows: CostEnergyRow[]; planned_kwh: number; planned_cost: number };
+  bom: { rows: CostBomRow[]; total: number; acquired: number };
+  actual: { material: number; energy: number; energy_kwh: number; prints: number };
+  warnings: CostWarning[];
 }
 
 // Project plan ("Job") — every plate a project needs
@@ -1210,6 +1308,7 @@ export type CameraViewMode = 'window' | 'embedded' | 'card';
 
 export interface AppSettings {
   auto_archive: boolean;
+  moonraker_archive_gcode_max_mb?: number;
   save_thumbnails: boolean;
   capture_finish_photo: boolean;
   default_filament_cost: number;
@@ -2266,6 +2365,9 @@ export interface PrintQueueItem {
   // Batch grouping
   batch_id?: number | null;
   batch_name?: string | null;
+  project_id?: number | null;
+  project_name?: string | null;
+  plan_item_id?: number | null;
   // Shortest-job-first scheduling
   been_jumped?: boolean;
   // Auto-print G-code injection
@@ -2367,6 +2469,24 @@ export interface PrintQueueBulkUpdate {
   use_ams?: boolean;
   // Auto-print G-code injection
   gcode_injection?: boolean;
+  // Project link (null unlinks)
+  project_id?: number | null;
+}
+
+export interface PrintQueueProjectLink {
+  item_ids: number[];
+  project_id: number | null;
+  add_to_plan?: boolean;
+  folder_id?: number | null;
+}
+
+export interface PrintQueueProjectLinkResponse {
+  updated_count: number;
+  skipped_count: number;
+  plan_items_created: number;
+  plan_items_linked: number;
+  library_files_created: number;
+  message: string;
 }
 
 export interface PrintQueueBulkUpdateResponse {
@@ -2469,7 +2589,7 @@ export interface Filament {
 }
 
 // Notification Provider types
-export type ProviderType = 'callmebot' | 'ntfy' | 'pushover' | 'telegram' | 'email' | 'discord' | 'webhook' | 'homeassistant' | 'notify';
+export type ProviderType = 'callmebot' | 'ntfy' | 'pushover' | 'telegram' | 'email' | 'discord' | 'webhook' | 'homeassistant' | 'notify' | 'printbuddy_app';
 
 export interface NotificationProvider {
   id: number;
@@ -2484,6 +2604,7 @@ export interface NotificationProvider {
   on_print_stopped: boolean;
   on_print_progress: boolean;
   on_print_almost_done: boolean;
+  attach_image?: boolean;
   on_print_missing_spool_assignment: boolean;
   // Printer status events
   on_printer_offline: boolean;
@@ -2544,6 +2665,7 @@ export interface NotificationProviderCreate {
   on_print_stopped?: boolean;
   on_print_progress?: boolean;
   on_print_almost_done?: boolean;
+  attach_image?: boolean;
   on_print_missing_spool_assignment?: boolean;
   // Printer status events
   on_printer_offline?: boolean;
@@ -2597,6 +2719,7 @@ export interface NotificationProviderUpdate {
   on_print_stopped?: boolean;
   on_print_progress?: boolean;
   on_print_almost_done?: boolean;
+  attach_image?: boolean;
   on_print_missing_spool_assignment?: boolean;
   // Printer status events
   on_printer_offline?: boolean;
@@ -3756,6 +3879,122 @@ export interface AuthStatus {
 }
 
 // API functions
+// User-reported failure reasons ("Report failed print"). Separate from the
+// automatic failure_reason used by the Failure Analysis widget.
+export interface CustomFailureMaterial {
+  type: string | null;
+  color: string | null;
+  grams: number | null;
+}
+
+export interface CustomFailureReport {
+  id: number;
+  custom_failure_reason: string;
+  comment: string | null;
+  reported_by: string | null;
+  reported_at: string | null;
+  printer_id: number | null;
+  printer_name: string | null;
+  archive_id: number | null;
+  print_name: string | null;
+  filename: string | null;
+  print_status: string | null;
+  print_started_at: string | null;
+  print_date: string | null;
+  materials: CustomFailureMaterial[];
+  filament_used_grams: number | null;
+  print_time_seconds: number | null;
+  has_thumbnail: boolean;
+  /**
+   * manual = a person picked the reason; auto = derived from Printbuddy's automatic data, unconfirmed;
+   * imported = taken over from a reason picked in Printbuddy's Edit Archive dialog
+   */
+  source: CustomFailureSource;
+  /** failure_reason text Printbuddy had recorded for this print */
+  original_reason: string | null;
+  hms_code: string | null;
+  hms_description: string | null;
+  /** how far the print got when it stopped / failed (0-100); null = unknown */
+  progress_percent: number | null;
+}
+
+export type CustomFailureSource = 'manual' | 'auto' | 'imported';
+/** Statistics filter: person = manual + imported, automatic = auto */
+export type CustomFailureSourceFilter = 'person' | 'automatic';
+
+export interface CustomFailureSuggestion {
+  reason: string;
+  hms_code: string;
+  hms_description: string | null;
+}
+
+export interface CustomFailureReportTarget {
+  printer_id: number;
+  printer_name: string;
+  is_current_print: boolean;
+  archive_id: number;
+  print_name: string | null;
+  filename: string | null;
+  print_status: string | null;
+  print_started_at: string | null;
+  has_thumbnail: boolean;
+  existing_report: CustomFailureReport | null;
+  /** reason pre-selected from the printer's current error code */
+  suggestion: CustomFailureSuggestion | null;
+}
+
+export interface CustomFailureReasonStats {
+  reason: string;
+  count: number;
+  percent: number;
+  latest: CustomFailureReport[];
+}
+
+export interface CustomFailureStats {
+  total: number;
+  /** automatically detected reports in the date range, regardless of the source filter */
+  automatic_total: number;
+  latest_limit: number;
+  reasons: CustomFailureReasonStats[];
+}
+
+export interface CustomFailureReason {
+  id: number;
+  code: string;
+  /** null on a default reason = use the translated default text */
+  title: string | null;
+  subtitle: string | null;
+  /** built-in icon name (lucide) */
+  icon: string | null;
+  /** uploaded image, shown instead of the built-in icon */
+  custom_icon_filename: string | null;
+  is_system: boolean;
+  is_hidden: boolean;
+  sort_order: number;
+}
+
+export interface CustomFailureReasonInput {
+  title?: string | null;
+  subtitle?: string | null;
+  icon?: string | null;
+  is_hidden?: boolean;
+}
+
+export interface CustomFailureReportInput {
+  custom_failure_reason: string;
+  comment?: string | null;
+  reported_by?: string | null;
+}
+
+function customFailureQuery(params: Record<string, string | undefined>): string {
+  const search = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => {
+    if (value) search.set(key, value);
+  });
+  const qs = search.toString();
+  return qs ? `?${qs}` : '';
+}
+
 export const api = {
   // Authentication
   getAuthStatus: () => request<AuthStatus>('/auth/status'),
@@ -4560,6 +4799,74 @@ export const api = {
     const qs = params.toString();
     return request<FailureAnalysis>(`/archives/analysis/failures${qs ? `?${qs}` : ''}`);
   },
+  // Custom failure reports ("Report failed print" / "Fail reason statistics")
+  getCustomFailureReasons: (options?: { includeHidden?: boolean }) =>
+    request<CustomFailureReason[]>(
+      `/custom-failure-reports/reasons/${options?.includeHidden ? '?include_hidden=true' : ''}`
+    ),
+  createCustomFailureReason: (data: CustomFailureReasonInput & { title: string }) =>
+    request<CustomFailureReason>('/custom-failure-reports/reasons/', { method: 'POST', body: JSON.stringify(data) }),
+  updateCustomFailureReason: (id: number, data: CustomFailureReasonInput) =>
+    request<CustomFailureReason>(`/custom-failure-reports/reasons/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+  deleteCustomFailureReason: (id: number) =>
+    request<{ status: 'hidden' | 'deleted' }>(`/custom-failure-reports/reasons/${id}`, { method: 'DELETE' }),
+  restoreDefaultCustomFailureReasons: () =>
+    request<{ restored: number }>('/custom-failure-reports/reasons/restore-defaults', { method: 'POST' }),
+  reorderCustomFailureReasons: (ids: number[]) =>
+    request<CustomFailureReason[]>('/custom-failure-reports/reasons/order', {
+      method: 'PUT',
+      body: JSON.stringify({ ids }),
+    }),
+  getCustomFailureReasonIconUrl: (id: number, filename: string) =>
+    withStreamToken(`${API_BASE}/custom-failure-reports/reasons/${id}/icon?v=${encodeURIComponent(filename)}`),
+  uploadCustomFailureReasonIcon: async (id: number, file: File): Promise<CustomFailureReason> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const headers: Record<string, string> = {};
+    if (authToken) headers.Authorization = `Bearer ${authToken}`;
+    const response = await fetch(`${API_BASE}/custom-failure-reports/reasons/${id}/icon`, {
+      method: 'POST',
+      headers,
+      body: formData,
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || `HTTP ${response.status}`);
+    }
+    return response.json();
+  },
+  deleteCustomFailureReasonIcon: (id: number) =>
+    request<CustomFailureReason>(`/custom-failure-reports/reasons/${id}/icon`, { method: 'DELETE' }),
+  getCustomFailureReportTarget: (printerId: number) =>
+    request<CustomFailureReportTarget>(`/custom-failure-reports/printers/${printerId}/target`),
+  createCustomFailureReport: (data: CustomFailureReportInput & { printer_id: number; archive_id: number }) =>
+    request<CustomFailureReport>('/custom-failure-reports/', { method: 'POST', body: JSON.stringify(data) }),
+  updateCustomFailureReport: (id: number, data: Partial<CustomFailureReportInput>) =>
+    request<CustomFailureReport>(`/custom-failure-reports/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  deleteCustomFailureReport: (id: number) =>
+    request<{ status: string }>(`/custom-failure-reports/${id}`, { method: 'DELETE' }),
+  getCustomFailureStats: (options?: {
+    dateFrom?: string;
+    dateTo?: string;
+    source?: CustomFailureSourceFilter;
+    printerId?: number;
+  }) =>
+    request<CustomFailureStats>(
+      `/custom-failure-reports/stats${customFailureQuery({ date_from: options?.dateFrom, date_to: options?.dateTo, source: options?.source, printer_id: options?.printerId?.toString() })}`
+    ),
+  getCustomFailureReports: (options?: {
+    reason?: string;
+    dateFrom?: string;
+    dateTo?: string;
+    source?: CustomFailureSourceFilter;
+    printerId?: number;
+  }) =>
+    request<CustomFailureReport[]>(
+      `/custom-failure-reports/${customFailureQuery({ reason: options?.reason, date_from: options?.dateFrom, date_to: options?.dateTo, source: options?.source, printer_id: options?.printerId?.toString() })}`
+    ),
   compareArchives: (archiveIds: number[]) =>
     request<ArchiveComparison>(`/archives/compare?archive_ids=${archiveIds.join(',')}`),
   findSimilarArchives: (archiveId: number, limit = 10) =>
@@ -5416,6 +5723,11 @@ export const api = {
   bulkUpdateQueue: (data: PrintQueueBulkUpdate) =>
     request<PrintQueueBulkUpdateResponse>('/queue/bulk', {
       method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+  linkQueueItemsToProject: (data: PrintQueueProjectLink) =>
+    request<PrintQueueProjectLinkResponse>('/queue/project-link', {
+      method: 'POST',
       body: JSON.stringify(data),
     }),
   // Batches
@@ -6278,6 +6590,10 @@ export const api = {
     request<{ status: string; message: string }>(`/projects/${projectId}/bom/${itemId}`, {
       method: 'DELETE',
     }),
+
+  // Production cost estimate
+  getProjectCosts: (projectId: number) =>
+    request<ProjectCosts>(`/projects/${projectId}/costs`),
 
   // Project plan ("Job")
   getProjectPlan: (projectId: number) =>
@@ -7450,6 +7766,8 @@ export interface VirtualPrinterConfig {
   target_printer_id: number | null;
   auto_dispatch: boolean;
   queue_force_color_match: boolean;
+  /** Project every upload of this VP is linked to (null = none). */
+  default_project_id?: number | null;
   tailscale_disabled: boolean;
   bind_ip: string | null;
   remote_interface_ip: string | null;
@@ -7481,6 +7799,7 @@ export const multiVirtualPrinterApi = {
     target_printer_id?: number;
     auto_dispatch?: boolean;
     queue_force_color_match?: boolean;
+    default_project_id?: number | null;
     bind_ip?: string;
     remote_interface_ip?: string;
   }) =>
@@ -7498,6 +7817,7 @@ export const multiVirtualPrinterApi = {
     target_printer_id?: number;
     auto_dispatch?: boolean;
     queue_force_color_match?: boolean;
+    default_project_id?: number | null;
     tailscale_disabled?: boolean;
     bind_ip?: string;
     remote_interface_ip?: string;
@@ -7583,7 +7903,7 @@ export const pendingUploadsApi = {
 
   get: (id: number) => request<PendingUpload>(`/pending-uploads/${id}`),
 
-  archive: (id: number, data?: { tags?: string; notes?: string; project_id?: number }) =>
+  archive: (id: number, data?: { tags?: string; notes?: string; project_id?: number | null }) =>
     request<{ id: number; print_name: string; filename: string }>(`/pending-uploads/${id}/archive`, {
       method: 'POST',
       body: JSON.stringify(data || {}),

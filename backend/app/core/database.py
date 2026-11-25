@@ -178,6 +178,7 @@ async def init_db():
         auth_ephemeral,
         bug_report,
         color_catalog,
+        custom_failure_report,
         external_link,
         filament,
         filament_sku_settings,
@@ -244,6 +245,9 @@ async def init_db():
     # Seed default catalog entries
     await seed_spool_catalog()
     await seed_color_catalog()
+
+    # Seed the default fail reasons ("Report failed print")
+    await seed_custom_failure_reasons()
 
 
 # B2: Module-level counter exposing the number of rows skipped during the last
@@ -544,32 +548,40 @@ async def _migrate_update_auto_link_constraint(conn) -> None:
 
 
 async def _migrate_widen_spoolman_slot_ams_id_range(conn) -> None:
-    """Widen ck_ams_id_range on spoolman_slot_assignments to admit AMS-HT (#1274).
+    """Bring spoolman_slot_assignments' CHECKs up to the model's (AMS-HT #1274, the H3C's AMS 3H).
 
-    Old formula: (ams_id >= 0 AND ams_id <= 7) OR ams_id = 255
-    New formula: (ams_id >= 0 AND ams_id <= 7) OR (ams_id >= 128 AND ams_id <= 191) OR ams_id = 255
+    ck_ams_id_range, oldest formula: (ams_id >= 0 AND ams_id <= 7) OR ams_id = 255
+    #1274 added AMS-HT:  ... OR (ams_id >= 128 AND ams_id <= 191) OR ams_id = 255
+    Now also the AMS 3H: ... OR ams_id = 32 OR ...
+    ck_tray_id_range:    tray_id 0-3, and 4-8 for ams_id 32 / 255 (models.spoolman_slot_assignment)
 
-    The H2C/H2D AMS-HT reports ams_id 128+. The old constraint rejected every
-    AMS-HT slot link with `IntegrityError: CHECK constraint failed: ck_ams_id_range`.
+    The H2C/H2D AMS-HT reports ams_id 128+. The H3C's AMS 3H is unit 32 with
+    nine slots, and its per-hotend external inputs are stored as (255, 2-8).
+    The old constraints rejected every such slot link with
+    `IntegrityError: CHECK constraint failed`. The new constraints only widen
+    the old ones, so every existing row stays valid.
 
     PostgreSQL: DROP CONSTRAINT IF EXISTS + ADD new formula via _safe_execute.
-    SQLite: table recreation when the old (narrower) formula is detected in
-    sqlite_master. Fresh installs already have the widened constraint from
-    the CREATE TABLE migration above.
+    SQLite: table recreation when an older formula is detected in
+    sqlite_master. Fresh installs get the model's constraints from the
+    CREATE TABLE migration below.
     """
     from sqlalchemy import text
 
-    _NEW_FORMULA = "(ams_id >= 0 AND ams_id <= 7) OR (ams_id >= 128 AND ams_id <= 191) OR ams_id = 255"
-    _CONSTRAINT_NAME = "ck_ams_id_range"
+    from backend.app.models.spoolman_slot_assignment import AMS_ID_CHECK, TRAY_ID_CHECK
 
     if not is_sqlite():
+        # A table from the older raw CREATE TABLE carries its CHECKs inline,
+        # under PostgreSQL's own names; drop those too so only the named ones apply.
+        for auto_named in ("spoolman_slot_assignments_ams_id_check", "spoolman_slot_assignments_tray_id_check"):
+            await _safe_execute(conn, f"ALTER TABLE spoolman_slot_assignments DROP CONSTRAINT IF EXISTS {auto_named}")
+        await _safe_execute(conn, "ALTER TABLE spoolman_slot_assignments DROP CONSTRAINT IF EXISTS ck_ams_id_range")
         await _safe_execute(
-            conn,
-            f"ALTER TABLE spoolman_slot_assignments DROP CONSTRAINT IF EXISTS {_CONSTRAINT_NAME}",
+            conn, f"ALTER TABLE spoolman_slot_assignments ADD CONSTRAINT ck_ams_id_range CHECK ({AMS_ID_CHECK})"
         )
+        await _safe_execute(conn, "ALTER TABLE spoolman_slot_assignments DROP CONSTRAINT IF EXISTS ck_tray_id_range")
         await _safe_execute(
-            conn,
-            f"ALTER TABLE spoolman_slot_assignments ADD CONSTRAINT {_CONSTRAINT_NAME} CHECK ({_NEW_FORMULA})",
+            conn, f"ALTER TABLE spoolman_slot_assignments ADD CONSTRAINT ck_tray_id_range CHECK ({TRAY_ID_CHECK})"
         )
         return
 
@@ -581,8 +593,8 @@ async def _migrate_widen_spoolman_slot_ams_id_range(conn) -> None:
     if not row:
         return
     sql = row[0] or ""
-    # Already widened by an earlier run or by the fresh-install CREATE TABLE above.
-    if "ams_id >= 128" in sql:
+    # Already in the final form (a previous start, or the fresh-install CREATE TABLE).
+    if "ams_id = 32" in sql and "ams_id IN (32, 255)" in sql:
         return
     # Pre-migration table without any CHECK constraint at all → leave alone;
     # the app-level validation handles correctness and we don't risk a
@@ -598,11 +610,13 @@ async def _migrate_widen_spoolman_slot_ams_id_range(conn) -> None:
                     "CREATE TABLE spoolman_slot_assignments_v2 ("
                     "id INTEGER PRIMARY KEY AUTOINCREMENT, "
                     "printer_id INTEGER NOT NULL REFERENCES printers(id) ON DELETE CASCADE, "
-                    f"ams_id INTEGER NOT NULL CHECK ({_NEW_FORMULA}), "
-                    "tray_id INTEGER NOT NULL CHECK (tray_id >= 0 AND tray_id <= 3), "
+                    "ams_id INTEGER NOT NULL, "
+                    "tray_id INTEGER NOT NULL, "
                     "spoolman_spool_id INTEGER NOT NULL, "
                     "assigned_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, "
-                    "CONSTRAINT uq_slot_assignment UNIQUE(printer_id, ams_id, tray_id)"
+                    "CONSTRAINT uq_slot_assignment UNIQUE(printer_id, ams_id, tray_id), "
+                    f"CONSTRAINT ck_ams_id_range CHECK ({AMS_ID_CHECK}), "
+                    f"CONSTRAINT ck_tray_id_range CHECK ({TRAY_ID_CHECK})"
                     ")"
                 )
             )
@@ -633,7 +647,7 @@ async def _migrate_widen_spoolman_slot_ams_id_range(conn) -> None:
             )
     except Exception as exc:
         logger.error(
-            "spoolman_slot_assignments ck_ams_id_range widening (SQLite table recreation) FAILED: %s",
+            "spoolman_slot_assignments CHECK widening (SQLite table recreation) FAILED: %s",
             exc,
             exc_info=True,
         )
@@ -673,6 +687,11 @@ async def run_migrations(conn):
         await conn.execute(
             text("UPDATE notification_providers SET on_print_almost_done = FALSE WHERE on_print_almost_done IS NULL")
         )
+    # Per-provider camera snapshot attachment (on by default, matching the
+    # behaviour before the toggle existed). No column default, see above.
+    await _safe_execute(conn, "ALTER TABLE notification_providers ADD COLUMN attach_image BOOLEAN")
+    async with conn.begin_nested():
+        await conn.execute(text("UPDATE notification_providers SET attach_image = TRUE WHERE attach_image IS NULL"))
 
     # Migration: Add source_3mf_path column to print_archives
     await _safe_execute(conn, "ALTER TABLE print_archives ADD COLUMN source_3mf_path VARCHAR(500)")
@@ -993,6 +1012,13 @@ async def run_migrations(conn):
         await _safe_execute(
             conn, "ALTER TABLE virtual_printers ADD COLUMN queue_force_color_match BOOLEAN DEFAULT FALSE"
         )
+
+    # Migration: default_project_id on virtual_printers. Uploads of a VP with a
+    # default project are linked to that project (archive + queue items).
+    await _safe_execute(
+        conn,
+        "ALTER TABLE virtual_printers ADD COLUMN default_project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL",
+    )
 
     # Migration: protocol + api_key on virtual_printers (#52). Existing rows are
     # Bambu-emulating VPs; "moonraker" VPs expose an OctoPrint/Moonraker-compatible
@@ -2313,18 +2339,21 @@ async def run_migrations(conn):
     # Migration: Create spoolman_slot_assignments table for local AMS-slot→Spoolman-spool mapping.
     # Replaces the pattern of writing spool.location in Spoolman (which polluted the
     # user-editable storage_location field in the UI).
-    # ck_ams_id_range formula was widened in #1274 to admit AMS-HT (ams_id 128-191).
+    # ck_ams_id_range formula was widened in #1274 to admit AMS-HT (ams_id 128-191),
+    # and for the H3C's AMS 3H (as models.spoolman_slot_assignment).
     await _safe_execute(
         conn,
         """
         CREATE TABLE IF NOT EXISTS spoolman_slot_assignments (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             printer_id INTEGER NOT NULL REFERENCES printers(id) ON DELETE CASCADE,
-            ams_id INTEGER NOT NULL CHECK ((ams_id >= 0 AND ams_id <= 7) OR (ams_id >= 128 AND ams_id <= 191) OR ams_id = 255),
-            tray_id INTEGER NOT NULL CHECK (tray_id >= 0 AND tray_id <= 3),
+            ams_id INTEGER NOT NULL,
+            tray_id INTEGER NOT NULL,
             spoolman_spool_id INTEGER NOT NULL,
             assigned_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            CONSTRAINT uq_slot_assignment UNIQUE(printer_id, ams_id, tray_id)
+            CONSTRAINT uq_slot_assignment UNIQUE(printer_id, ams_id, tray_id),
+            CONSTRAINT ck_ams_id_range CHECK ((ams_id >= 0 AND ams_id <= 7) OR ams_id = 32 OR (ams_id >= 128 AND ams_id <= 191) OR ams_id = 255),
+            CONSTRAINT ck_tray_id_range CHECK (tray_id >= 0 AND (tray_id <= 3 OR (ams_id IN (32, 255) AND tray_id <= 8)))
         )
         """
         if is_sqlite()
@@ -2332,11 +2361,13 @@ async def run_migrations(conn):
         CREATE TABLE IF NOT EXISTS spoolman_slot_assignments (
             id SERIAL PRIMARY KEY,
             printer_id INTEGER NOT NULL REFERENCES printers(id) ON DELETE CASCADE,
-            ams_id INTEGER NOT NULL CHECK ((ams_id >= 0 AND ams_id <= 7) OR (ams_id >= 128 AND ams_id <= 191) OR ams_id = 255),
-            tray_id INTEGER NOT NULL CHECK (tray_id >= 0 AND tray_id <= 3),
+            ams_id INTEGER NOT NULL,
+            tray_id INTEGER NOT NULL,
             spoolman_spool_id INTEGER NOT NULL,
             assigned_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            CONSTRAINT uq_slot_assignment UNIQUE(printer_id, ams_id, tray_id)
+            CONSTRAINT uq_slot_assignment UNIQUE(printer_id, ams_id, tray_id),
+            CONSTRAINT ck_ams_id_range CHECK ((ams_id >= 0 AND ams_id <= 7) OR ams_id = 32 OR (ams_id >= 128 AND ams_id <= 191) OR ams_id = 255),
+            CONSTRAINT ck_tray_id_range CHECK (tray_id >= 0 AND (tray_id <= 3 OR (ams_id IN (32, 255) AND tray_id <= 8)))
         )
         """,
     )
@@ -2345,9 +2376,9 @@ async def run_migrations(conn):
         "CREATE INDEX IF NOT EXISTS ix_slot_assignment_spool ON spoolman_slot_assignments (spoolman_spool_id)",
     )
 
-    # Migration: widen ck_ams_id_range on spoolman_slot_assignments to allow
-    # AMS-HT ids (128-191). Existing installs created before #1274 carry the
-    # stale formula which rejects every AMS-HT slot link with a CHECK violation.
+    # Migration: widen the CHECKs on spoolman_slot_assignments to allow AMS-HT
+    # ids (128-191) and the H3C's AMS 3H (32, nine slots) and per-hotend inputs
+    # (255, 2-8). Existing installs carry a stale formula which rejects such links.
     await _migrate_widen_spoolman_slot_ams_id_range(conn)
 
     # Migration: Create spoolman_k_profile table for K-value calibration profiles linked to Spoolman spools.
@@ -2803,6 +2834,13 @@ async def run_migrations(conn):
             "REFERENCES project_plan_items(id) ON DELETE SET NULL",
         )
     await _safe_execute(conn, "CREATE INDEX IF NOT EXISTS ix_print_queue_plan_item_id ON print_queue (plan_item_id)")
+    # Migration: production cost estimate — printer power draw + project waste %
+    if is_sqlite():
+        await _safe_execute(conn, "ALTER TABLE printers ADD COLUMN power_watts REAL")
+        await _safe_execute(conn, "ALTER TABLE projects ADD COLUMN waste_percent REAL")
+    else:
+        await _safe_execute(conn, "ALTER TABLE printers ADD COLUMN IF NOT EXISTS power_watts DOUBLE PRECISION")
+        await _safe_execute(conn, "ALTER TABLE projects ADD COLUMN IF NOT EXISTS waste_percent DOUBLE PRECISION")
     await _safe_execute(
         conn, "CREATE INDEX IF NOT EXISTS ix_print_archives_plan_item_id ON print_archives (plan_item_id)"
     )
@@ -3118,6 +3156,14 @@ async def seed_spool_catalog():
             session.add(SpoolCatalogEntry(name=name, weight=weight, is_default=True))
         await session.commit()
         logger.info("Seeded %d default spool catalog entries", len(DEFAULT_SPOOL_CATALOG))
+
+
+async def seed_custom_failure_reasons():
+    """Create any missing default fail reason (first start, or new defaults after an upgrade)."""
+    from backend.app.services.custom_failure_reasons import ensure_default_reasons
+
+    async with async_session() as session:
+        await ensure_default_reasons(session)
 
 
 async def seed_color_catalog():

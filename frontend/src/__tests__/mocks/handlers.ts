@@ -49,6 +49,7 @@ const mockNotificationProviders = [
     on_print_stopped: false,
     on_print_progress: false,
   on_print_almost_done: false,
+    attach_image: true,
     on_printer_offline: false,
     on_printer_error: false,
     on_filament_low: false,

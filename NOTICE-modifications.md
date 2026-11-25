@@ -79,6 +79,7 @@ Printbuddy is a modified fork of an upstream AGPL-3.0 project. The upstream hist
 - `backend/app/services/virtual_printer/ftp_server.py` — modified by Printbuddy; latest modification date: 2026-06-06.
 - `backend/app/services/virtual_printer/manager.py` — modified by Printbuddy; latest modification date: 2026-06-06.
 - `backend/app/services/virtual_printer/ssdp_server.py` — modified by Printbuddy; latest modification date: 2026-06-06.
+- `backend/app/utils/tray_ids.py` — added by Printbuddy; latest modification date: 2026-11-15.
 - `backend/tests/conftest.py` — modified by Printbuddy; latest modification date: 2026-06-07.
 - `backend/tests/integration/test_auth_apikey_rbac.py` — modified by Printbuddy; latest modification date: 2026-06-07.
 - `backend/tests/integration/test_camera_api.py` — modified by Printbuddy; latest modification date: 2026-06-06.
@@ -108,6 +109,7 @@ Printbuddy is a modified fork of an upstream AGPL-3.0 project. The upstream hist
 - `backend/tests/unit/test_cli.py` — deleted by Printbuddy; latest modification date: 2026-06-07.
 - `backend/tests/unit/test_firmware_versions.py` — modified by Printbuddy; latest modification date: 2026-06-06.
 - `backend/tests/unit/test_git_providers.py` — modified by Printbuddy; latest modification date: 2026-06-07.
+- `backend/tests/unit/test_h3c_support.py` — added by Printbuddy; latest modification date: 2026-11-15.
 - `backend/tests/unit/test_ldap_migration.py` — modified by Printbuddy; latest modification date: 2026-06-07.
 - `backend/tests/unit/test_local_backup.py` — modified by Printbuddy; latest modification date: 2026-06-07.
 - `backend/tests/unit/test_print_log_backfill_migration.py` — modified by Printbuddy; latest modification date: 2026-06-07.
@@ -175,6 +177,7 @@ Printbuddy is a modified fork of an upstream AGPL-3.0 project. The upstream hist
 - `frontend/public/img/printers/elegoo-neptune-4-pro.png` — added by Printbuddy; latest modification date: 2026-06-06.
 - `frontend/public/img/printers/elegoo-neptune-4.png` — added by Printbuddy; latest modification date: 2026-06-06.
 - `frontend/public/img/printers/generic-printer.png` — added by Printbuddy; latest modification date: 2026-06-06.
+- `frontend/public/img/printers/h3c.png` — added by Printbuddy; latest modification date: 2026-11-15.
 - `frontend/public/img/printers/prusa-core-one.png` — added by Printbuddy; latest modification date: 2026-06-06.
 - `frontend/public/img/printers/prusa-mini+.png` — added by Printbuddy; latest modification date: 2026-06-06.
 - `frontend/public/img/printers/prusa-mk3.5.png` — added by Printbuddy; latest modification date: 2026-06-06.
@@ -236,6 +239,7 @@ Printbuddy is a modified fork of an upstream AGPL-3.0 project. The upstream hist
 - `frontend/src/__tests__/utils/assetPaths.test.ts` — added by Printbuddy; latest modification date: 2026-06-06.
 - `frontend/src/__tests__/utils/printer.test.ts` — modified by Printbuddy; latest modification date: 2026-06-06.
 - `frontend/src/__tests__/utils/printerFileRules.test.ts` — added by Printbuddy; latest modification date: 2026-06-06.
+- `frontend/src/__tests__/utils/trayIds.test.ts` — added by Printbuddy; latest modification date: 2026-11-15.
 - `frontend/src/api/client.ts` — modified by Printbuddy; latest modification date: 2026-06-07.
 - `frontend/src/App.tsx` — modified by Printbuddy; latest modification date: 2026-06-07.
 - `frontend/src/components/AddNotificationModal.tsx` — modified by Printbuddy; latest modification date: 2026-06-06.
@@ -312,6 +316,7 @@ Printbuddy is a modified fork of an upstream AGPL-3.0 project. The upstream hist
 - `frontend/src/utils/printer.ts` — modified by Printbuddy; latest modification date: 2026-06-06.
 - `frontend/src/utils/printerCamera.ts` — added by Printbuddy; latest modification date: 2026-06-07.
 - `frontend/src/utils/printerFileRules.ts` — added by Printbuddy; latest modification date: 2026-06-06.
+- `frontend/src/utils/trayIds.ts` — added by Printbuddy; latest modification date: 2026-11-15.
 - `frontend/vite.config.ts` — modified by Printbuddy; latest modification date: 2026-06-07.
 - `gcode_viewer/index.html` — modified by Printbuddy; latest modification date: 2026-06-06.
 - `gcode_viewer/js/printbuddy_adapter.js → gcode_viewer/js/printbuddy_adapter.js` — renamed by Printbuddy; latest modification date: 2026-06-06.
@@ -402,6 +407,7 @@ Printbuddy is a modified fork of an upstream AGPL-3.0 project. The upstream hist
 - `static/img/printers/elegoo-neptune-4-pro.png` — added by Printbuddy; latest modification date: 2026-06-06.
 - `static/img/printers/elegoo-neptune-4.png` — added by Printbuddy; latest modification date: 2026-06-06.
 - `static/img/printers/generic-printer.png` — added by Printbuddy; latest modification date: 2026-06-06.
+- `static/img/printers/h3c.png` — added by Printbuddy; latest modification date: 2026-11-15.
 - `static/img/printers/prusa-core-one.png` — added by Printbuddy; latest modification date: 2026-06-06.
 - `static/img/printers/prusa-mini+.png` — added by Printbuddy; latest modification date: 2026-06-06.
 - `static/img/printers/prusa-mk3.5.png` — added by Printbuddy; latest modification date: 2026-06-06.

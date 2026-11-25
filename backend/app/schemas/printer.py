@@ -201,6 +201,7 @@ class PrinterBase(BaseModel):
     provider_options: str | None = Field(default=None, max_length=4000)
     model: str | None = None
     location: str | None = None  # Group/location name
+    power_watts: float | None = Field(default=None, ge=0, le=10000)  # Avg power while printing (W)
     auto_archive: bool = True
     reconnect_interval_seconds: int = Field(default=30, ge=10, le=3600)
     external_camera_url: str | None = None
@@ -237,6 +238,7 @@ class PrinterUpdate(BaseModel):
     provider_options: str | None = Field(default=None, max_length=4000)
     model: str | None = None
     location: str | None = None
+    power_watts: float | None = Field(default=None, ge=0, le=10000)  # null clears
     is_active: bool | None = None
     auto_archive: bool | None = None
     reconnect_interval_seconds: int | None = Field(default=None, ge=10, le=3600)
@@ -285,6 +287,7 @@ class PrinterResponse(PrinterBase):
             "provider_options": getattr(printer, "provider_options", None),
             "model": printer.model,
             "location": printer.location,
+            "power_watts": getattr(printer, "power_watts", None),
             "custom_image_filename": getattr(printer, "custom_image_filename", None),
             "auto_archive": printer.auto_archive,
             "reconnect_interval_seconds": getattr(printer, "reconnect_interval_seconds", 30),
@@ -371,7 +374,11 @@ class AMSUnit(BaseModel):
     dry_status: int = 0  # 0=Off, 1=Checking, 2=Drying, 3=Cooling, 4=Stopping, 5=Error
     dry_sub_status: int = 0  # 0=Off, 1=Heating, 2=Dehumidify
     dry_sf_reason: list[int] = []  # Cannot-dry reasons from firmware (see CannotDryReason)
-    module_type: str = ""  # "ams", "n3f", "n3s"
+    module_type: str = ""  # "ams", "n3f", "n3s", "n10a" (the H3C's AMS 3H)
+    # Bambu Studio's AMS type (bits 0-3 of `info`): 6 = AMS 3H (H3C, nine slots)
+    ams_type: int | None = None
+    # AMS 3H: the slots (0-8) of the zone that can dry; empty on other units
+    dry_zone_slots: list[int] = []
 
 
 class NozzleInfoResponse(BaseModel):

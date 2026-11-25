@@ -367,6 +367,19 @@ export function NotificationProviderCard({ provider, onEdit }: NotificationProvi
                     onChange={(checked) => updateMutation.mutate({ on_print_almost_done: checked })}
                   />
                 </div>
+
+                {['telegram', 'discord', 'ntfy', 'pushover', 'webhook'].includes(provider.provider_type) && (
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-sm text-white">{t('notifications.attachImageLabel')}</p>
+                      <p className="text-xs text-bambu-gray">{t('notifications.attachImageDescription')}</p>
+                    </div>
+                    <Toggle
+                      checked={provider.attach_image ?? true}
+                      onChange={(checked) => updateMutation.mutate({ attach_image: checked })}
+                    />
+                  </div>
+                )}
               </div>
 
               {/* Printer Status Events */}

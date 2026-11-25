@@ -9,10 +9,28 @@ jobs:
   notify-n8n:
     if: ${{ !github.event.release.prerelease && !github.event.release.draft }}
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
+      # Best effort only: the blog post is a side effect of a release. If n8n
+      # is down this must not turn the release commit red, because other
+      # automation (e.g. the Home Assistant add-on release) gates on the
+      # commit's checks.
       - name: Trigger n8n workflow
+        continue-on-error: true
+        env:
+          N8N_WEBHOOK_TOKEN: ${{ secrets.N8N_WEBHOOK_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+          REPO: ${{ github.repository }}
         run: |
-          curl -fsS -X POST "https://n8n.vmhomelab.de/webhook/github-release-blogpost" \
-            -H "Authorization: Bearer ${{ secrets.N8N_WEBHOOK_TOKEN }}" \
-            -H "Content-Type: application/json" \
-            -d '{"tag": "${{ github.event.release.tag_name }}", "repo": "${{ github.repository }}"}'
+          if [ -z "${N8N_WEBHOOK_TOKEN}" ]; then
+            echo "::warning::N8N_WEBHOOK_TOKEN is not set; skipping blog post trigger."
+            exit 0
+          fi
+          payload="$(jq -cn --arg tag "$TAG" --arg repo "$REPO" '{tag: $tag, repo: $repo}')"
+          if ! curl -fsS --max-time 30 --retry 3 --retry-delay 10 --retry-all-errors \
+              -X POST "https://n8n.vmhomelab.de/webhook/github-release-blogpost" \
+              -H "Authorization: Bearer ${N8N_WEBHOOK_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -d "$payload"; then
+            echo "::warning::n8n webhook unreachable; blog post for ${TAG} was not triggered. Re-run this workflow once n8n is back."
+          fi

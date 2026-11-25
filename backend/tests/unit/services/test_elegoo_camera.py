@@ -370,3 +370,47 @@ async def test_activated_elegoo_frame_capture_wraps_capture_with_sdcp_session():
         snapshot_url=None,
     )
     assert session_events == [("192.168.1.234", False), ("192.168.1.234", True)]
+
+
+def test_moonraker_printer_without_external_camera_uses_discovered_webcam():
+    row = SimpleNamespace(id=7, provider="klipper", ip_address="192.168.1.50", external_camera_enabled=False)
+    client = SimpleNamespace(
+        primary_webcam={
+            "stream_url": "http://192.168.1.50/webcam/?action=stream",
+            "snapshot_url": "http://192.168.1.50/webcam/?action=snapshot",
+            "camera_type": "mjpeg",
+        }
+    )
+    with patch("backend.app.services.printer_manager.printer_manager.get_client", return_value=client):
+        source = get_effective_camera_source(row)
+
+    assert source.enabled is True
+    assert source.url == "http://192.168.1.50/webcam/?action=stream"
+    assert source.snapshot_url == "http://192.168.1.50/webcam/?action=snapshot"
+    assert source.camera_type == "mjpeg"
+    assert source.derived is True
+
+
+def test_moonraker_configured_external_camera_wins_over_discovered_webcam():
+    row = SimpleNamespace(
+        id=7,
+        provider="klipper",
+        ip_address="192.168.1.50",
+        external_camera_enabled=True,
+        external_camera_url="rtsp://cam.local/stream",
+        external_camera_type="rtsp",
+    )
+    client = SimpleNamespace(primary_webcam={"stream_url": "http://192.168.1.50/webcam/?action=stream"})
+    with patch("backend.app.services.printer_manager.printer_manager.get_client", return_value=client):
+        source = get_effective_camera_source(row)
+
+    assert source.url == "rtsp://cam.local/stream"
+    assert source.derived is False
+
+
+def test_moonraker_printer_without_discovered_webcam_has_no_camera():
+    row = SimpleNamespace(id=7, provider="klipper", ip_address="192.168.1.50", external_camera_enabled=False)
+    with patch("backend.app.services.printer_manager.printer_manager.get_client", return_value=None):
+        source = get_effective_camera_source(row)
+
+    assert source.enabled is False

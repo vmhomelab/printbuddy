@@ -58,6 +58,8 @@ from backend.app.utils.filament_ids import (
     generic_bambu_filament_id,
     normalize_slicer_filament,
 )
+from backend.app.utils.printer_models import has_ams3h
+from backend.app.utils.tray_ids import AMS3H_UNIT_ID
 
 logger = logging.getLogger(__name__)
 
@@ -428,11 +430,27 @@ def _validate_spoolman_slot_shape(ams_id: int, tray_id: int) -> None:
         if 0 <= tray_id <= 3:
             return
         raise HTTPException(status_code=422, detail="Invalid tray ID")
+    # The H3C's AMS 3H: one unit (32) with nine slots.
+    if ams_id == AMS3H_UNIT_ID:
+        if 0 <= tray_id <= 8:
+            return
+        raise HTTPException(status_code=422, detail="AMS 3H assignments support tray_id 0-8")
     if ams_id == SPOOLMAN_EXTERNAL_AMS_ID:
-        if tray_id in SPOOLMAN_DUAL_EXTERNAL_TRAY_IDS:
+        # 2-8: an H3C's per-hotend external inputs (247-253); checked against
+        # the printer by _validate_spoolman_slot_for_printer.
+        if tray_id in SPOOLMAN_DUAL_EXTERNAL_TRAY_IDS or 2 <= tray_id <= 8:
             return
         raise HTTPException(status_code=422, detail="External/loaded Spoolman assignments support tray_id 0 or 1")
     raise HTTPException(status_code=422, detail="Invalid AMS ID")
+
+
+def _validate_spoolman_slot_for_printer(printer: Printer, ams_id: int, tray_id: int) -> None:
+    """Refuse the H3C-only slots (AMS 3H 32, external inputs 2-8) on any other printer."""
+    h3c_only = ams_id == AMS3H_UNIT_ID or (ams_id == SPOOLMAN_EXTERNAL_AMS_ID and tray_id >= 2)
+    if h3c_only and not has_ams3h(printer.model):
+        if ams_id == SPOOLMAN_EXTERNAL_AMS_ID:
+            raise HTTPException(status_code=422, detail="External/loaded Spoolman assignments support tray_id 0 or 1")
+        raise HTTPException(status_code=422, detail="Invalid AMS ID")
 
 
 def _is_bambu_slot_configuration_provider(printer: Printer) -> bool:
@@ -446,7 +464,8 @@ class SpoolSlotAssignmentRequest(BaseModel):
     # ams_id 0–7 for physical AMS units, 128–191 for AMS-HT,
     # 255 = external/virtual loaded-spool namespace.
     ams_id: int = Field(..., ge=0, le=255)
-    tray_id: int = Field(..., ge=0, le=3)
+    # 4-8 only on an H3C (AMS 3H 32, external inputs 255); see _validate_spoolman_slot_shape.
+    tray_id: int = Field(..., ge=0, le=8)
 
     @model_validator(mode="after")
     def validate_slot_shape(self) -> SpoolSlotAssignmentRequest:
@@ -1265,6 +1284,7 @@ async def assign_spoolman_slot(
     printer = result.scalar_one_or_none()
     if not printer:
         raise HTTPException(status_code=404, detail="Printer not found")
+    _validate_spoolman_slot_for_printer(printer, body.ams_id, body.tray_id)
 
     # Verify the Spoolman spool exists before committing to local DB.
     # This prevents ghost rows pointing at non-existent spool IDs.
@@ -1545,7 +1565,7 @@ async def unassign_spoolman_slot(
 async def get_spoolman_slot_assignment(
     printer_id: int = Query(..., gt=0),
     ams_id: int = Query(..., ge=0, le=255),
-    tray_id: int = Query(..., ge=0, le=3),
+    tray_id: int = Query(..., ge=0, le=8),
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_READ),
 ) -> dict | None:
@@ -1557,6 +1577,7 @@ async def get_spoolman_slot_assignment(
     printer = result.scalar_one_or_none()
     if not printer:
         raise HTTPException(status_code=404, detail="Printer not found")
+    _validate_spoolman_slot_for_printer(printer, ams_id, tray_id)
 
     slot_result = await db.execute(
         select(SpoolmanSlotAssignment).where(

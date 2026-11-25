@@ -918,6 +918,33 @@ class TestNotificationProviderTypes:
         mock_send.assert_awaited_once()
 
 
+class TestAttachImageToggle:
+    """Per-provider opt-out of the camera snapshot attachment."""
+
+    @pytest.fixture
+    def service(self):
+        return NotificationService()
+
+    @staticmethod
+    def _provider(attach_image):
+        provider = MagicMock()
+        provider.name = "Telegram"
+        provider.provider_type = "telegram"
+        provider.config = json.dumps({"bot_token": "t", "chat_id": "1"})
+        provider.quiet_hours_enabled = False
+        provider.attach_image = attach_image
+        return provider
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("attach_image", "expected"), [(True, b"jpeg"), (None, b"jpeg"), (False, None)])
+    async def test_send_to_provider_respects_attach_image(self, service, attach_image, expected):
+        with patch.object(service, "_send_telegram", new_callable=AsyncMock) as mock_send:
+            mock_send.return_value = (True, "ok")
+            await service._send_to_provider(self._provider(attach_image), "T", "M", image_data=b"jpeg")
+
+        assert mock_send.await_args.kwargs["image_data"] == expected
+
+
 class TestTelegramProvider:
     """Telegram bot notification delivery."""
 

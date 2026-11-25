@@ -68,6 +68,7 @@ CHAMBER_TEMP_SUPPORTED_MODELS = frozenset(
         "H2D",
         "H2DPRO",
         "H2S",  # H2 series
+        "H3C",  # H3 series
         "CENTAURI CARBON",  # Elegoo SDCP / CC1
         "ELEGOO CENTAURI CARBON",
         "CENTAURI-CARBON",
@@ -83,6 +84,7 @@ CHAMBER_TEMP_SUPPORTED_MODELS = frozenset(
         "O1E",  # H2D Pro
         "O2D",  # H2D Pro (alternate code)
         "N7",  # P2S
+        "N10",  # H3C
     ]
 )
 
@@ -267,6 +269,13 @@ class _StatusPoller:
                             on_state_change(state)
                         except Exception:  # noqa: BLE001
                             logger.debug("Offline state callback failed", exc_info=True)
+                continue
+            refresh = getattr(self.client, "refresh_background_caches", None)
+            if callable(refresh):
+                try:
+                    refresh()
+                except Exception:  # noqa: BLE001 - optional cache refresh must never kill the poller
+                    logger.debug("Background cache refresh failed", exc_info=True)
 
 
 async def run_client_call(client, method: Callable, *args, **kwargs):

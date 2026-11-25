@@ -88,12 +88,19 @@ def _map_prusalink_state(raw_state: Any) -> str:
     }.get(state, state or "unknown")
 
 
-def _progress_percent(value: Any) -> float:
+def _progress_percent(value: Any, *, fraction: bool = False) -> float:
+    """Normalize a progress value to 0..100 percent.
+
+    The modern PrusaLink API (``/api/v1/status`` ``job.progress`` and
+    ``/api/v1/job`` ``progress``) already reports percent, so values are only
+    clamped. The legacy OctoPrint-style ``/api/job`` endpoint reports
+    ``progress.completion`` as a 0..1 fraction; pass ``fraction=True`` there.
+    """
     try:
         progress = float(value or 0.0)
     except (TypeError, ValueError):
         return 0.0
-    if 0.0 <= progress <= 1.0:
+    if fraction:
         progress *= 100.0
     return max(0.0, min(progress, 100.0))
 
@@ -553,7 +560,7 @@ class PrusaLinkPrinterClient(PolledLifecycleMixin):
             state = job_detail.get("state") or job_detail.get("status") or "IDLE"
             self._set_state(state)
             if job_detail:
-                self._apply_job_detail(job_detail)
+                self._apply_job_detail(job_detail, legacy=True)
             self._emit_status_callbacks(previous_state)
             self._last_state = self.state.state
             self._has_status_sample = True
@@ -613,12 +620,17 @@ class PrusaLinkPrinterClient(PolledLifecycleMixin):
             return "stopped"
         return super()._completion_status(current_state)
 
-    def _apply_job_detail(self, job_detail: dict[str, Any]) -> None:
+    def _apply_job_detail(self, job_detail: dict[str, Any], *, legacy: bool = False) -> None:
         self._job_id = job_detail.get("id") if isinstance(job_detail.get("id"), int) else self._job_id
         if job_detail.get("state"):
             self._set_state(job_detail.get("state"), job_active=True)
         if "progress" in job_detail:
-            self.state.progress = _progress_percent(job_detail.get("progress"))
+            progress = job_detail.get("progress")
+            if legacy and isinstance(progress, dict):
+                # Legacy /api/job: {"progress": {"completion": 0..1, ...}}
+                self.state.progress = _progress_percent(progress.get("completion"), fraction=True)
+            else:
+                self.state.progress = _progress_percent(progress)
         if "time_remaining" in job_detail:
             self.state.remaining_time = minutes_from_seconds(job_detail.get("time_remaining"))
         file_info = job_detail.get("file") if isinstance(job_detail.get("file"), dict) else {}

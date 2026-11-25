@@ -903,6 +903,7 @@ export function ProjectPlanSection({
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: ['project-plan', projectId] });
     queryClient.invalidateQueries({ queryKey: ['project-plan-summary', projectId] });
+    queryClient.invalidateQueries({ queryKey: ['project-costs', projectId] });
     queryClient.invalidateQueries({ queryKey: ['project', projectId] });
     queryClient.invalidateQueries({ queryKey: ['projects'] });
   };
