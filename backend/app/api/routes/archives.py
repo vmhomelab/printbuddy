@@ -22,13 +22,20 @@ from backend.app.core.config import settings
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.archive import PrintArchive
-from backend.app.models.filament import Filament
 from backend.app.models.spool_usage_history import SpoolUsageHistory
 from backend.app.models.user import User
 from backend.app.schemas.archive import ArchiveResponse, ArchiveSlim, ArchiveStats, ArchiveUpdate, ReprintRequest
 from backend.app.schemas.print_log import PrintLogResponse
 from backend.app.schemas.slicer import SliceRequest
-from backend.app.services.archive import ArchiveService, resolve_archive_dir, resolve_archive_photo_path
+from backend.app.services.archive import (
+    ArchiveService,
+    estimate_filament_cost,
+    load_filament_cost_catalog,
+    parse_slice_info_plates,
+    plate_number_from_print_data,
+    resolve_archive_dir,
+    resolve_archive_photo_path,
+)
 from backend.app.utils.http import build_content_disposition
 from backend.app.utils.threemf_tools import (
     discover_plate_indices,
@@ -40,6 +47,13 @@ from backend.app.utils.threemf_tools import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/archives", tags=["archives"])
+
+
+def _archive_plate_number(archive: PrintArchive) -> int | None:
+    """Plate the printer actually ran for this archive, if recorded at print start."""
+    extra = archive.extra_data if isinstance(archive.extra_data, dict) else {}
+    print_data = extra.get("_print_data")
+    return plate_number_from_print_data(print_data if isinstance(print_data, dict) else None)
 
 
 def _safe_filename(filename: str) -> str:
@@ -1429,8 +1443,9 @@ async def rescan_archive(
     if not file_path.is_file():
         raise HTTPException(404, "Archive file not found")
 
-    # Parse the 3MF file
-    parser = ThreeMFParser(file_path)
+    # Parse the 3MF file. For printed archives restrict to the plate that was
+    # actually printed; manually archived multi-plate files are aggregated.
+    parser = ThreeMFParser(file_path, plate_number=_archive_plate_number(archive))
     metadata = parser.parse()
 
     # Update fields from metadata
@@ -1481,21 +1496,16 @@ async def rescan_archive(
                 total_cost += (untracked_grams / 1000.0) * default_cost_per_kg
             archive.cost = float(Decimal(str(total_cost)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
         else:
-            primary_type = archive.filament_type.split(",")[0].strip()
-            filament_result = await db.execute(select(Filament).where(Filament.type == primary_type).limit(1))
-            filament = filament_result.scalar_one_or_none()
-            if filament:
-                archive.cost = float(
-                    Decimal(str((archive.filament_used_grams / 1000) * filament.cost_per_kg)).quantize(
-                        Decimal("0.01"), rounding=ROUND_HALF_UP
-                    )
-                )
-            else:
-                archive.cost = float(
-                    Decimal(str((archive.filament_used_grams / 1000) * default_cost_per_kg)).quantize(
-                        Decimal("0.01"), rounding=ROUND_HALF_UP
-                    )
-                )
+            catalog, _default = await load_filament_cost_catalog(db)
+            estimated = estimate_filament_cost(
+                archive.filament_used_grams,
+                archive.filament_type,
+                metadata.get("filament_slots"),
+                catalog,
+                default_cost_per_kg,
+            )
+            if estimated is not None:
+                archive.cost = estimated
 
     await db.commit()
     await db.refresh(archive)
@@ -1509,18 +1519,11 @@ async def recalculate_all_costs(
 ):
     """Recalculate costs for all archives based on filament usage and prices."""
 
-    from backend.app.api.routes.settings import get_setting
-
     result = await db.execute(select(PrintArchive))
     archives = list(result.scalars().all())
 
-    # Load all filaments for lookup
-    filament_result = await db.execute(select(Filament))
-    filaments = {f.type: f.cost_per_kg for f in filament_result.scalars().all()}
-
-    # Get default filament cost from settings
-    default_cost_setting = await get_setting(db, "default_filament_cost")
-    default_cost_per_kg = float(default_cost_setting) if default_cost_setting else 25.0
+    # Filament catalog (TYPE -> cost/kg) and default cost from settings
+    catalog, default_cost_per_kg = await load_filament_cost_catalog(db)
 
     # Pre-fetch all usage costs and tracked weight by archive_id.
     # Tracked weight is used to top-up the cost at the default rate for any
@@ -1561,12 +1564,14 @@ async def recalculate_all_costs(
             fallback_cost = usage_result.scalar()
             if fallback_cost is not None and fallback_cost > 0:
                 new_cost = round(fallback_cost, 2)
-            elif archive.filament_used_grams and archive.filament_type:
-                primary_type = archive.filament_type.split(",")[0].strip()
-                cost_per_kg = filaments.get(primary_type, default_cost_per_kg)
-                new_cost = round((archive.filament_used_grams / 1000) * cost_per_kg, 2)
             else:
-                new_cost = None
+                new_cost = estimate_filament_cost(
+                    archive.filament_used_grams,
+                    archive.filament_type,
+                    (archive.extra_data or {}).get("filament_slots"),
+                    catalog,
+                    default_cost_per_kg,
+                )
         if new_cost is not None and archive.cost != new_cost:
             archive.cost = new_cost
             updated += 1
@@ -1596,7 +1601,7 @@ async def rescan_all_archives(
                 errors.append({"id": archive.id, "error": "File not found"})
                 continue
 
-            parser = ThreeMFParser(file_path)
+            parser = ThreeMFParser(file_path, plate_number=_archive_plate_number(archive))
             metadata = parser.parse()
 
             if metadata.get("filament_type"):
@@ -3155,75 +3160,27 @@ async def get_archive_plates(
                 content = zf.read("Metadata/slice_info.config").decode()
                 root = ET.fromstring(content)
 
-                for plate_elem in root.findall(".//plate"):
-                    plate_info = {"filaments": [], "prediction": None, "weight": None, "name": None, "objects": []}
-
-                    # Get plate index from metadata
-                    plate_index = None
-                    for meta in plate_elem.findall("metadata"):
-                        key = meta.get("key")
-                        value = meta.get("value")
-                        if key == "index" and value:
-                            try:
-                                plate_index = int(value)
-                            except ValueError:
-                                pass  # Skip plate with non-numeric index
-                        elif key == "prediction" and value:
-                            try:
-                                plate_info["prediction"] = int(value)
-                            except ValueError:
-                                pass  # Skip non-numeric print time prediction
-                        elif key == "weight" and value:
-                            try:
-                                plate_info["weight"] = float(value)
-                            except ValueError:
-                                pass  # Skip non-numeric filament weight
-
-                    # Get filaments used in this plate
-                    for filament_elem in plate_elem.findall("filament"):
-                        filament_id = filament_elem.get("id")
-                        filament_type = filament_elem.get("type", "")
-                        filament_color = filament_elem.get("color", "")
-                        used_g = filament_elem.get("used_g", "0")
-                        used_m = filament_elem.get("used_m", "0")
-
-                        try:
-                            used_grams = float(used_g)
-                        except (ValueError, TypeError):
-                            used_grams = 0
-
-                        if used_grams > 0 and filament_id:
-                            plate_info["filaments"].append(
-                                {
-                                    "slot_id": int(filament_id),
-                                    "type": filament_type,
-                                    "color": filament_color,
-                                    "used_grams": round(used_grams, 1),
-                                    "used_meters": float(used_m) if used_m else 0,
-                                }
-                            )
-
-                    # Sort filaments by slot ID
-                    plate_info["filaments"].sort(key=lambda x: x["slot_id"])
-
-                    # Collect all object names on this plate
-                    for obj_elem in plate_elem.findall("object"):
-                        obj_name = obj_elem.get("name")
-                        if obj_name and obj_name not in plate_info["objects"]:
-                            plate_info["objects"].append(obj_name)
-
-                    # Set plate name: prefer custom name from model_settings.config,
-                    # fall back to first object name if no custom name was set
-                    if plate_index is not None:
-                        custom_name = plate_names.get(plate_index)
-                        if custom_name:
-                            plate_info["name"] = custom_name
-                        else:
-                            # Fall back to first object name as hint
-                            if plate_info["objects"]:
-                                plate_info["name"] = plate_info["objects"][0]
-
-                        plate_metadata[plate_index] = plate_info
+                for plate_index, parsed in parse_slice_info_plates(root).items():
+                    plate_info = {
+                        "prediction": parsed["prediction"],
+                        "weight": parsed["weight"],
+                        "objects": list(parsed["object_names"]),
+                        "filaments": [
+                            {
+                                "slot_id": f["slot_id"],
+                                "type": f["type"],
+                                "color": f["color"],
+                                "used_grams": round(f["used_g"], 1),
+                                "used_meters": f["used_m"],
+                            }
+                            for f in parsed["filaments"]
+                        ],
+                        # Prefer custom name from model_settings.config, fall
+                        # back to the first object name as a hint.
+                        "name": plate_names.get(plate_index)
+                        or (parsed["object_names"][0] if parsed["object_names"] else None),
+                    }
+                    plate_metadata[plate_index] = plate_info
 
             # Parse plate_*.json for object lists when slice_info is missing
             plate_json_objects: dict[int, list[str]] = {}

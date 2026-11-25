@@ -130,6 +130,163 @@ def peek_plate_index_in_3mf(file_path: Path) -> int | None:
     return None
 
 
+def _safe_float(value) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def parse_slice_info_plates(root) -> dict[int, dict]:
+    """Parse every ``<plate>`` block of a ``slice_info.config`` root.
+
+    Multi-plate 3MF exports carry one ``<plate>`` element per plate, each
+    with its own prediction / weight / filaments / objects. Returns a dict
+    keyed by plate index (falling back to the 1-based position when a plate
+    has no ``index`` metadata), each value shaped::
+
+        {
+            "index": int,
+            "prediction": int | None,       # seconds
+            "weight": float | None,         # grams
+            "bed_type": str | None,
+            "filaments": [{"slot_id", "type", "color", "used_g", "used_m"}],  # used_g > 0 only
+            "printable_objects": {identify_id: name},  # non-skipped only
+            "object_names": [str],          # unique names of all objects, in order
+        }
+    """
+    plates: dict[int, dict] = {}
+    for position, plate_elem in enumerate(root.findall(".//plate"), start=1):
+        info: dict = {
+            "index": None,
+            "prediction": None,
+            "weight": None,
+            "bed_type": None,
+            "filaments": [],
+            "printable_objects": {},
+            "object_names": [],
+        }
+        for meta in plate_elem.findall("metadata"):
+            key = meta.get("key")
+            value = meta.get("value")
+            if not value:
+                continue
+            try:
+                if key == "index":
+                    info["index"] = int(value)
+                elif key == "prediction":
+                    info["prediction"] = int(float(value))
+                elif key == "weight":
+                    info["weight"] = float(value)
+                elif key == "curr_bed_type":
+                    info["bed_type"] = value
+            except ValueError:
+                pass  # Skip non-numeric plate metadata
+
+        for filament_elem in plate_elem.findall("filament"):
+            slot_id = filament_elem.get("id")
+            used_g = _safe_float(filament_elem.get("used_g", "0"))
+            if used_g <= 0 or not slot_id:
+                continue
+            try:
+                slot = int(slot_id)
+            except ValueError:
+                continue
+            info["filaments"].append(
+                {
+                    "slot_id": slot,
+                    "type": filament_elem.get("type", ""),
+                    "color": filament_elem.get("color", ""),
+                    "used_g": used_g,
+                    "used_m": _safe_float(filament_elem.get("used_m", "0")),
+                }
+            )
+        info["filaments"].sort(key=lambda f: f["slot_id"])
+
+        for obj in plate_elem.findall("object"):
+            identify_id = obj.get("identify_id")
+            name = obj.get("name")
+            if name and name not in info["object_names"]:
+                info["object_names"].append(name)
+            if identify_id and name and obj.get("skipped", "false").lower() != "true":
+                try:
+                    info["printable_objects"][int(identify_id)] = name
+                except ValueError:
+                    pass  # Skip objects with non-numeric identify_id
+
+        index = info["index"] if info["index"] is not None else position
+        info["index"] = index
+        plates.setdefault(index, info)
+    return plates
+
+
+def plate_number_from_print_data(print_data: dict | None) -> int | None:
+    """Plate the printer ran, from the MQTT ``gcode_file`` (e.g. ``Metadata/plate_5.gcode``)."""
+    if not print_data:
+        return None
+    match = re.search(r"plate_(\d+)", print_data.get("filename") or "")
+    return int(match.group(1)) if match else None
+
+
+def estimate_filament_cost(
+    total_grams: float | None,
+    filament_type: str | None,
+    filament_slots: list | None,
+    catalog: dict[str, float],
+    default_cost_per_kg: float,
+) -> float | None:
+    """Catalog-based cost estimate for a print.
+
+    With per-slot usage (``filament_slots``) each material is priced at its
+    own catalog rate; the resulting blended price per kg is applied to
+    ``total_grams`` so a later correction of the total weight (actual usage)
+    still yields a consistent cost. Without slot data the first listed
+    filament type is used for the whole weight (legacy behaviour).
+    ``catalog`` maps upper-cased material type → cost per kg.
+    """
+    if not total_grams or total_grams <= 0:
+        return None
+
+    def rate(ftype: str | None) -> float:
+        key = (ftype or "").strip().upper()
+        price = catalog.get(key)
+        return price if price is not None and price > 0 else default_cost_per_kg
+
+    weighted_grams = 0.0
+    weighted_price = 0.0
+    for slot in filament_slots or []:
+        if not isinstance(slot, dict):
+            continue
+        grams = _safe_float(slot.get("used_g"))
+        if grams <= 0:
+            continue
+        weighted_grams += grams
+        weighted_price += grams * rate(slot.get("type"))
+
+    if weighted_grams > 0:
+        price_per_kg = weighted_price / weighted_grams
+    elif filament_type:
+        price_per_kg = rate(filament_type.split(",")[0])
+    else:
+        return None
+    return round((total_grams / 1000) * price_per_kg, 2)
+
+
+async def load_filament_cost_catalog(db: AsyncSession) -> tuple[dict[str, float], float]:
+    """Return (``{TYPE: cost_per_kg}`` from the filament catalog, default cost per kg)."""
+    from backend.app.api.routes.settings import get_setting
+
+    result = await db.execute(select(Filament))
+    catalog: dict[str, float] = {}
+    for filament in result.scalars().all():
+        key = (filament.type or "").strip().upper()
+        if key and filament.cost_per_kg is not None and key not in catalog:
+            catalog[key] = float(filament.cost_per_kg)
+    default_cost_setting = await get_setting(db, "default_filament_cost")
+    default_cost_per_kg = float(default_cost_setting) if default_cost_setting else 25.0
+    return catalog, default_cost_per_kg
+
+
 _PLATE_SUFFIX_RE = re.compile(r"^(.*?)(\s*-\s*Plate\s+|_plate_)(\d+)$", re.IGNORECASE)
 
 
@@ -221,102 +378,112 @@ class ThreeMFParser:
                             self.metadata["sliced_for_model"] = normalized
                         break
 
-                # Find the plate element (single-plate exports only have one plate)
-                plate = root.find(".//plate")
-
-                if plate is not None:
-                    # Extract metadata from plate element
-                    for meta in plate.findall("metadata"):
-                        key = meta.get("key")
-                        value = meta.get("value")
-                        if key == "index" and value:
-                            # Extract plate index - this tells us which plate was exported
-                            try:
-                                extracted_index = int(value)
-                                # Set plate_number if not already set from filename
-                                if not self.plate_number:
-                                    self.plate_number = extracted_index
-                                # Store in metadata for print_name generation
-                                self.metadata["_plate_index"] = extracted_index
-                            except ValueError:
-                                pass  # Skip non-numeric plate index
-                        elif key == "prediction" and value:
-                            self.metadata["print_time_seconds"] = int(value)
-                        elif key == "weight" and value:
-                            self.metadata["filament_used_grams"] = float(value)
-                        elif key == "curr_bed_type" and value:
-                            self.metadata["bed_type"] = value
-
-                    # Extract printable objects for skip object functionality
-                    # Objects are stored as <object identify_id="123" name="Part1" skipped="false" />
-                    printable_objects = {}
-                    for obj in plate.findall("object"):
-                        identify_id = obj.get("identify_id")
-                        name = obj.get("name")
-                        skipped = obj.get("skipped", "false")
-
-                        # Only include objects that are not pre-skipped
-                        if identify_id and name and skipped.lower() != "true":
-                            try:
-                                printable_objects[int(identify_id)] = name
-                            except ValueError:
-                                pass  # Skip objects with non-numeric identify_id
-
-                    if printable_objects:
-                        self.metadata["printable_objects"] = printable_objects
-
-                # Get filament info from filaments ACTUALLY USED in the print
-                # slice_info has <filament id="1" type="PLA" color="#FFFFFF" used_g="100" />
-                # Only include filaments where used_g > 0
-                filaments = root.findall(".//filament")
-                if filaments:
-                    # Collect unique filament types and colors for filaments that are actually used
-                    types = []
-                    colors = []
-                    for f in filaments:
-                        # Check if this filament is actually used in the print
-                        used_g = f.get("used_g", "0")
-                        try:
-                            used_amount = float(used_g)
-                        except (ValueError, TypeError):
-                            used_amount = 0
-
-                        # Only include if used_g > 0 (filament is actually consumed)
-                        if used_amount > 0:
-                            ftype = f.get("type")
-                            fcolor = f.get("color")
-                            if ftype and ftype not in types:
-                                types.append(ftype)
-                            if fcolor and fcolor not in colors:
-                                colors.append(fcolor)
-
-                    if types:
-                        self.metadata["_slice_filament_type"] = ", ".join(types)
-                    if colors:
-                        self.metadata["_slice_filament_color"] = ",".join(colors)
-
-                    # Collect per-slot filament usage for tracking & notifications
-                    filament_slots = []
-                    for f in filaments:
-                        slot_id = f.get("id")
-                        used_g_str = f.get("used_g", "0")
-                        try:
-                            used_g = float(used_g_str)
-                        except (ValueError, TypeError):
-                            used_g = 0
-                        if used_g > 0 and slot_id:
-                            filament_slots.append(
-                                {
-                                    "slot_id": int(slot_id),
-                                    "used_g": round(used_g, 2),
-                                    "type": f.get("type", ""),
-                                    "color": f.get("color", ""),
-                                }
-                            )
-                    if filament_slots:
-                        self.metadata["filament_slots"] = filament_slots
+                plates = parse_slice_info_plates(root)
+                self._apply_plate_selection(plates, root)
         except Exception:
             pass  # Skip unparseable slice_info metadata
+
+    def _apply_plate_selection(self, plates: dict[int, dict], root) -> None:
+        """Fill print time / weight / filaments / objects from the relevant plate(s).
+
+        * The printed plate is known (``plate_number``, e.g. from MQTT) and present:
+          use only that plate.
+        * The file holds a single plate: use it (and adopt its index).
+        * Otherwise (a multi-plate project archived or uploaded as a whole):
+          aggregate over all plates so cost / weight / time / quantity reflect
+          the complete model, and keep the per-plate breakdown in ``plates``.
+        """
+        if not plates:
+            selected: list[dict] = []
+        elif self.plate_number and self.plate_number in plates:
+            selected = [plates[self.plate_number]]
+            self.metadata["_plate_index"] = self.plate_number
+        elif len(plates) == 1:
+            selected = list(plates.values())
+            index = selected[0]["index"]
+            if not self.plate_number:
+                self.plate_number = index
+            self.metadata["_plate_index"] = index
+        else:
+            selected = [plates[i] for i in sorted(plates)]
+
+        if len(plates) > 1:
+            self.metadata["plate_count"] = len(plates)
+            self.metadata["plates"] = [
+                {
+                    "index": p["index"],
+                    "print_time_seconds": p["prediction"],
+                    "filament_used_grams": round(p["weight"], 2) if p["weight"] is not None else None,
+                    "object_count": len(p["printable_objects"]),
+                    "filaments": [
+                        {
+                            "slot_id": f["slot_id"],
+                            "type": f["type"],
+                            "color": f["color"],
+                            "used_g": round(f["used_g"], 2),
+                        }
+                        for f in p["filaments"]
+                    ],
+                }
+                for p in (plates[i] for i in sorted(plates))
+            ]
+
+        predictions = [p["prediction"] for p in selected if p["prediction"] is not None]
+        if predictions:
+            self.metadata["print_time_seconds"] = sum(predictions)
+        weights = [p["weight"] for p in selected if p["weight"] is not None]
+        if weights:
+            self.metadata["filament_used_grams"] = round(sum(weights), 2)
+        bed_type = next((p["bed_type"] for p in selected if p["bed_type"]), None)
+        if bed_type:
+            self.metadata["bed_type"] = bed_type
+
+        printable_objects: dict[int, str] = {}
+        for p in selected:
+            printable_objects.update(p["printable_objects"])
+        if printable_objects:
+            self.metadata["printable_objects"] = printable_objects
+
+        # Filaments ACTUALLY USED (used_g > 0) on the selected plate(s),
+        # merged per AMS slot. Some exports list <filament> outside <plate>;
+        # fall back to every <filament> element for those.
+        filaments = [f for p in selected for f in p["filaments"]]
+        if not filaments:
+            for f in root.findall(".//filament"):
+                slot_id = f.get("id")
+                used_g = _safe_float(f.get("used_g", "0"))
+                if used_g > 0 and slot_id and slot_id.isdigit():
+                    filaments.append(
+                        {
+                            "slot_id": int(slot_id),
+                            "type": f.get("type", ""),
+                            "color": f.get("color", ""),
+                            "used_g": used_g,
+                        }
+                    )
+        if not filaments:
+            return
+
+        types: list[str] = []
+        colors: list[str] = []
+        slots: dict[int, dict] = {}
+        for f in filaments:
+            if f["type"] and f["type"] not in types:
+                types.append(f["type"])
+            if f["color"] and f["color"] not in colors:
+                colors.append(f["color"])
+            slot = slots.setdefault(
+                f["slot_id"], {"slot_id": f["slot_id"], "used_g": 0.0, "type": f["type"], "color": f["color"]}
+            )
+            slot["used_g"] += f["used_g"]
+
+        if types:
+            self.metadata["_slice_filament_type"] = ", ".join(types)
+        if colors:
+            self.metadata["_slice_filament_color"] = ",".join(colors)
+        self.metadata["filament_slots"] = [
+            {**s, "used_g": round(s["used_g"], 2)} for s in (slots[k] for k in sorted(slots))
+        ]
 
     def _parse_project_settings(self, zf: zipfile.ZipFile):
         """Parse project settings for print configuration."""
@@ -340,8 +507,11 @@ class ThreeMFParser:
             if not gcode_files:
                 return
 
-            # Read first 4KB of G-code (header contains metadata)
+            # Read first 4KB of G-code (header contains metadata). Prefer the
+            # printed / selected plate's G-code in multi-plate exports.
             gcode_path = gcode_files[0]
+            if self.plate_number and f"Metadata/plate_{self.plate_number}.gcode" in gcode_files:
+                gcode_path = f"Metadata/plate_{self.plate_number}.gcode"
             with zf.open(gcode_path) as f:
                 header = f.read(4096).decode("utf-8", errors="ignore")
 
@@ -1170,12 +1340,7 @@ class ArchiveService:
         content_hash = self.compute_file_hash(dest_file)
 
         # Extract plate number from filename (e.g., "plate_5" from "/data/Metadata/plate_5.gcode")
-        plate_number = None
-        if print_data:
-            filename = print_data.get("filename", "")
-            match = re.search(r"plate_(\d+)", filename)
-            if match:
-                plate_number = int(match.group(1))
+        plate_number = plate_number_from_print_data(print_data)
 
         # Parse metadata: 3MF via its embedded config, raw G-code (Moonraker/
         # OctoPrint-compatible virtual printers, #52) via its comment headers.
@@ -1209,25 +1374,18 @@ class ArchiveService:
         started_at = datetime.now(timezone.utc) if status == "printing" else None
         completed_at = datetime.now(timezone.utc) if status in ("completed", "failed", "archived") else None
 
-        # Calculate cost based on filament usage and type
+        # Calculate cost based on filament usage, priced per material when the
+        # 3MF lists per-slot usage (multi-material / multi-plate prints).
         cost = None
-        filament_grams = metadata.get("filament_used_grams")
-        filament_type = metadata.get("filament_type")
-        if filament_grams and filament_type:
-            # For multi-material prints, use the first filament type for cost calculation
-            primary_type = filament_type.split(",")[0].strip()
-            # Look up filament cost_per_kg from database
-            filament_result = await self.db.execute(select(Filament).where(Filament.type == primary_type).limit(1))
-            filament = filament_result.scalar_one_or_none()
-            if filament:
-                cost = round((filament_grams / 1000) * filament.cost_per_kg, 2)
-            else:
-                # Use default filament cost from settings
-                from backend.app.api.routes.settings import get_setting
-
-                default_cost_setting = await get_setting(self.db, "default_filament_cost")
-                default_cost_per_kg = float(default_cost_setting) if default_cost_setting else 25.0
-                cost = round((filament_grams / 1000) * default_cost_per_kg, 2)
+        if metadata.get("filament_used_grams"):
+            catalog, default_cost_per_kg = await load_filament_cost_catalog(self.db)
+            cost = estimate_filament_cost(
+                metadata.get("filament_used_grams"),
+                metadata.get("filament_type"),
+                metadata.get("filament_slots"),
+                catalog,
+                default_cost_per_kg,
+            )
 
         # Calculate quantity from printable objects count
         # printable_objects is a dict of {identify_id: name} for non-skipped objects
