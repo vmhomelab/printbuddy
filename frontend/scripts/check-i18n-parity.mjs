@@ -1,4 +1,4 @@
-// Verifies parity across locale files (en / de / fr / it / ja / pt-BR / zh-CN / zh-TW):
+// Verifies parity across locale files (en / de / fr / it / ja / pt-BR / ru / zh-CN / zh-TW):
 //   1. Leaf-key sets are identical
 //   2. Each leaf's {{placeholder}} set is identical
 //   3. Plural suffixes: every en key ending in _plural / _one / _other must
