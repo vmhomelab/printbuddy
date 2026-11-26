@@ -1,4 +1,4 @@
-// Verifies parity across locale files (en / de / fr / it / ja / pt-BR / zh-CN / zh-TW):
+// Verifies parity across locale files (en / de / fr / it / ja / pt-BR / ru / zh-CN / zh-TW):
 //   1. Leaf-key sets are identical
 //   2. Each leaf's {{placeholder}} set is identical
 //   3. Plural suffixes: every en key ending in _plural / _one / _other must
@@ -335,7 +335,14 @@ export function compareLocales(locales) {
     if (code === 'en') continue;
     const keys = new Set(map.keys());
     const missing = [...enKeys].filter((k) => !keys.has(k)).sort();
-    const extra = [...keys].filter((k) => !enKeys.has(k)).sort();
+    // CLDR plural categories en lacks (ru: _few/_many) are fine when en has the _other form.
+    const extra = [...keys]
+      .filter((k) => !enKeys.has(k))
+      .filter((k) => {
+        const m = k.match(/^(.*)_(zero|two|few|many)$/);
+        return !(m && enKeys.has(`${m[1]}_other`));
+      })
+      .sort();
     add(`${code}: missing keys vs en`, missing);
     add(`${code}: extra keys vs en`, extra);
   }

@@ -87,6 +87,32 @@ describe('compareLocales (parity-script self-test)', () => {
     ).toBe(true);
   });
 
+  it('accepts CLDR-only plural forms (_few/_many) when en has the matching _other', () => {
+    // Russian needs _few/_many, which en never has; they are fine as long as en
+    // plural-gates the same base key.
+    const result = compareLocales({
+      en: toMap({ x_one: '{{count}} spool', x_other: '{{count}} spools' }),
+      ru: toMap({
+        x_one: '{{count}} катушка',
+        x_few: '{{count}} катушки',
+        x_many: '{{count}} катушек',
+        x_other: '{{count}} катушки',
+      }),
+    });
+    expect(result.failed).toBe(false);
+    expect(result.reports).toEqual([]);
+  });
+
+  it('still flags _few/_many as extra keys when en has no matching _other', () => {
+    const result = compareLocales({
+      en: toMap({ x: 'x' }),
+      ru: toMap({ x: 'икс', x_few: 'икса', x_many: 'иксов' }),
+    });
+    expect(result.failed).toBe(true);
+    expect(hasReport(result.reports, 'ru: extra keys vs en', 'x_few')).toBe(true);
+    expect(hasReport(result.reports, 'ru: extra keys vs en', 'x_many')).toBe(true);
+  });
+
   it('throws when the en locale is absent', () => {
     expect(() =>
       compareLocales({ 'zh-CN': toMap({ a: 'x' }) } as Record<string, LocaleMap>),
