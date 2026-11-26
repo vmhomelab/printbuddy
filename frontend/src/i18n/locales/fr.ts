@@ -6496,4 +6496,13 @@ export default {
       deleteConfirm: 'Supprimer la raison « {{title}} » ? Si elle a déjà été signalée, elle est seulement masquée afin de conserver les statistiques.',
     },
   },
+  locationFilter: {
+    lock: "Verrouiller l'emplacement sur toutes les pages",
+    unlock: "Déverrouiller l'emplacement",
+    selectToLock: 'Choisissez un emplacement pour le verrouiller',
+    badge: 'Emplacement : {{location}}',
+    lockedHint: 'Verrouillé sur Imprimantes, Archives et Maintenance. Les imprimantes des autres emplacements sont masquées.',
+    allLocations: 'Tous les emplacements',
+    noPrintersAtLocation: 'Aucune imprimante avec maintenance à {{location}}.',
+  },
 };

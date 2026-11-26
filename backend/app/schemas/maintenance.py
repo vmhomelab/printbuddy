@@ -126,6 +126,7 @@ class PrinterMaintenanceOverview(BaseModel):
     printer_id: int
     printer_name: str
     printer_model: str | None  # For model-specific documentation links
+    printer_location: str | None = None  # Printer "Location" field, used by the shared location filter
     total_print_hours: float
     maintenance_items: list[MaintenanceStatus]
     due_count: int

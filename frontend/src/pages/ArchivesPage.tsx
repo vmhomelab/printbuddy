@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
@@ -11,6 +11,7 @@ import {
   Layers,
   Search,
   Filter,
+  MapPin,
   Image,
   Box,
   Printer,
@@ -88,6 +89,8 @@ import { PlatePickerModal } from '../components/PlatePickerModal';
 import type { PlateMetadata } from '../types/plates';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
+import { LocationLockButton, LocationLockBadge } from '../components/LocationFilter';
+import { LOCATION_FILTER_ALL, useLocationFilter } from '../hooks/useLocationFilter';
 import { formatFileSize } from '../utils/file';
 
 type TFunction = (key: string, options?: Record<string, unknown>) => string;
@@ -2656,6 +2659,33 @@ export function ArchivesPage() {
     queryFn: api.getPrinters,
   });
 
+  // Shared, lockable location filter (also used by Printers and Maintenance).
+  // Archives are matched by their printer's *current* location.
+  const availableLocations = useMemo(
+    () => [...new Set((printers ?? []).map(p => p.location || '').filter(Boolean))].sort(),
+    [printers],
+  );
+  const {
+    location: locationFilter,
+    setLocation: setLocationFilter,
+    locked: locationLocked,
+    setLocked: setLocationLocked,
+    isActive: locationActive,
+    matches: matchesLocation,
+  } = useLocationFilter(printers ? availableLocations : undefined);
+  const locationPrinters = useMemo(
+    () => (printers ?? []).filter(p => matchesLocation(p.location)),
+    [printers, matchesLocation],
+  );
+  const locationPrinterIds = useMemo(() => new Set(locationPrinters.map(p => p.id)), [locationPrinters]);
+  const locationParam = locationActive ? locationFilter : undefined;
+
+  // A remembered printer filter that isn't at the selected location would hide everything.
+  useEffect(() => {
+    if (!printers || !locationActive || filterPrinter === null) return;
+    if (!locationPrinterIds.has(filterPrinter)) setFilterPrinter(null);
+  }, [printers, locationActive, filterPrinter, locationPrinterIds]);
+
   const { data: projects } = useQuery({
     queryKey: ['projects'],
     queryFn: () => api.getProjects(),
@@ -2673,10 +2703,11 @@ export function ArchivesPage() {
   });
 
   const { data: printLogData, isLoading: isLogLoading } = useQuery({
-    queryKey: ['print-log', filterPrinter, logFilterUser, logFilterStatus, logFilterDateFrom, logFilterDateTo, search, logOffset, logPageSize],
+    queryKey: ['print-log', filterPrinter, locationParam, logFilterUser, logFilterStatus, logFilterDateFrom, logFilterDateTo, search, logOffset, logPageSize],
     queryFn: () => api.getPrintLog({
       search: search || undefined,
       printerId: filterPrinter || undefined,
+      location: locationParam,
       username: logFilterUser || undefined,
       status: logFilterStatus || undefined,
       dateFrom: logFilterDateFrom || undefined,
@@ -2879,6 +2910,9 @@ export function ArchivesPage() {
           break;
       }
 
+      // Location filter (printer's current location; archives without a printer are hidden)
+      const matchesLoc = !locationActive || (a.printer_id != null && locationPrinterIds.has(a.printer_id));
+
       // Search filter
       const matchesSearch = (a.print_name || a.filename).toLowerCase().includes(search.toLowerCase());
 
@@ -2913,7 +2947,7 @@ export function ArchivesPage() {
         (filterFileType === 'gcode' && isGcodeFile) ||
         (filterFileType === 'source' && !isGcodeFile);
 
-      return matchesCollection && matchesSearch && matchesMaterial && matchesColor && matchesFavorites && matchesHideFailed && matchesHideDuplicates && matchesTag && matchesFileType;
+      return matchesCollection && matchesLoc && matchesSearch && matchesMaterial && matchesColor && matchesFavorites && matchesHideFailed && matchesHideDuplicates && matchesTag && matchesFileType;
     })
     .sort((a, b) => {
       switch (sortBy) {
@@ -3005,9 +3039,11 @@ export function ArchivesPage() {
     setHideDuplicates(false);
     setFilterTag(null);
     setFilterFileType('all');
+    // A locked location is deliberate — only "Reset" an unlocked one.
+    if (!locationLocked) setLocationFilter(LOCATION_FILTER_ALL);
   };
 
-  const hasTopFilters = search || filterPrinter || filterMaterial || filterFavorites || hideFailed || hideDuplicates || filterTag || filterFileType !== 'all';
+  const hasTopFilters = search || (locationActive && !locationLocked) || filterPrinter || filterMaterial || filterFavorites || hideFailed || hideDuplicates || filterTag || filterFileType !== 'all';
 
   // Drag & drop handlers for page-wide upload
   const handleDragOver = useCallback((e: React.DragEvent) => {
@@ -3172,6 +3208,13 @@ export function ArchivesPage() {
               <p className="text-bambu-gray mt-1">
                 {filteredArchives?.length || 0} of {archives?.length || 0} prints
               </p>
+              {locationLocked && (
+                <LocationLockBadge
+                  location={locationFilter}
+                  onUnlock={() => setLocationLocked(false)}
+                  className="mt-2"
+                />
+              )}
             </div>
             <select
               className="mt-0.5 px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-bambu-gray-light text-sm focus:border-bambu-green focus:outline-none"
@@ -3212,6 +3255,7 @@ export function ArchivesPage() {
                       const { blob, filename } = await api.exportArchives({
                         format: 'csv',
                         printerId: filterPrinter || undefined,
+                        location: locationParam,
                         status: collection === 'failed' ? 'failed' : undefined,
                         search: search || undefined,
                       });
@@ -3241,6 +3285,7 @@ export function ArchivesPage() {
                       const { blob, filename } = await api.exportArchives({
                         format: 'xlsx',
                         printerId: filterPrinter || undefined,
+                        location: locationParam,
                         status: collection === 'failed' ? 'failed' : undefined,
                         search: search || undefined,
                       });
@@ -3351,6 +3396,28 @@ export function ArchivesPage() {
             </div>
             {/* Filters - horizontal scroll on mobile */}
             <div className="flex gap-2 md:gap-4 overflow-x-auto pb-1 md:pb-0 -mx-4 px-4 md:mx-0 md:px-0 md:flex-wrap scrollbar-hide">
+            {availableLocations.length > 0 && (
+              <div className="flex items-center gap-1 flex-shrink-0">
+                <MapPin className="w-4 h-4 text-bambu-gray hidden md:block mr-1" />
+                <select
+                  className="px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                  value={locationFilter}
+                  onChange={(e) => setLocationFilter(e.target.value)}
+                  aria-label={t('locationFilter.allLocations')}
+                >
+                  <option value={LOCATION_FILTER_ALL}>{t('locationFilter.allLocations')}</option>
+                  {availableLocations.map((loc) => (
+                    <option key={loc} value={loc}>{loc}</option>
+                  ))}
+                </select>
+                <LocationLockButton
+                  locked={locationLocked}
+                  canLock={locationActive}
+                  onToggle={setLocationLocked}
+                  className="h-10 w-10"
+                />
+              </div>
+            )}
             <div className="flex items-center gap-2 flex-shrink-0">
               <Filter className="w-4 h-4 text-bambu-gray hidden md:block" />
               <select
@@ -3361,7 +3428,7 @@ export function ArchivesPage() {
                 }
               >
                 <option value="">All Printers</option>
-                {printers?.map((p) => (
+                {locationPrinters.map((p) => (
                   <option key={p.id} value={p.id}>
                     {p.name}
                   </option>
@@ -3652,6 +3719,28 @@ export function ArchivesPage() {
                     onChange={(e) => { setSearch(e.target.value); setLogOffset(0); }}
                   />
                 </div>
+                {/* Location filter */}
+                {availableLocations.length > 0 && (
+                  <div className="flex items-center gap-1">
+                    <select
+                      className="px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
+                      value={locationFilter}
+                      onChange={(e) => { setLocationFilter(e.target.value); setLogOffset(0); }}
+                      aria-label={t('locationFilter.allLocations')}
+                    >
+                      <option value={LOCATION_FILTER_ALL}>{t('locationFilter.allLocations')}</option>
+                      {availableLocations.map((loc) => (
+                        <option key={loc} value={loc}>{loc}</option>
+                      ))}
+                    </select>
+                    <LocationLockButton
+                      locked={locationLocked}
+                      canLock={locationActive}
+                      onToggle={(locked) => { setLocationLocked(locked); setLogOffset(0); }}
+                      className="h-9 w-9"
+                    />
+                  </div>
+                )}
                 {/* Printer filter */}
                 <select
                   className="px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
@@ -3659,7 +3748,7 @@ export function ArchivesPage() {
                   onChange={(e) => { setFilterPrinter(e.target.value ? Number(e.target.value) : null); setLogOffset(0); }}
                 >
                   <option value="">{t('archives.log.allPrinters')}</option>
-                  {printers?.map((p) => (
+                  {locationPrinters.map((p) => (
                     <option key={p.id} value={p.id}>{p.name}</option>
                   ))}
                 </select>

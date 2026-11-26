@@ -6493,4 +6493,13 @@ export default {
       deleteConfirm: '刪除原因「{{title}}」？如果已被回報過，則只會隱藏，以保留統計資料。',
     },
   },
+  locationFilter: {
+    lock: '在所有頁面鎖定位置',
+    unlock: '解除鎖定位置',
+    selectToLock: '選擇一個位置以鎖定',
+    badge: '位置：{{location}}',
+    lockedHint: '已在印表機、封存與維護頁面鎖定。其他位置的印表機已隱藏。',
+    allLocations: '所有位置',
+    noPrintersAtLocation: '{{location}} 沒有需要維護的印表機。',
+  },
 };

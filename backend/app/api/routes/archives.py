@@ -731,6 +731,7 @@ async def export_archives(
     date_from: str | None = Query(None, description="Start date (ISO format)"),
     date_to: str | None = Query(None, description="End date (ISO format)"),
     search: str | None = None,
+    location: str | None = None,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermissionIfAuthEnabled(Permission.ARCHIVES_READ),
 ):
@@ -777,6 +778,7 @@ async def export_archives(
             date_from=date_from_dt,
             date_to=date_to_dt,
             search=search,
+            location=location,
         )
     except ImportError as e:
         raise HTTPException(500, str(e))

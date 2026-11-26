@@ -6495,4 +6495,13 @@ export default {
       deleteConfirm: 'Excluir o motivo "{{title}}"? Se já tiver sido relatado, ele apenas será ocultado para manter as estatísticas.',
     },
   },
+  locationFilter: {
+    lock: 'Fixar local em todas as páginas',
+    unlock: 'Liberar local',
+    selectToLock: 'Selecione um local para fixá-lo',
+    badge: 'Local: {{location}}',
+    lockedHint: 'Fixado em Impressoras, Arquivos e Manutenção. Impressoras de outros locais estão ocultas.',
+    allLocations: 'Todos os locais',
+    noPrintersAtLocation: 'Nenhuma impressora com manutenção em {{location}}.',
+  },
 };

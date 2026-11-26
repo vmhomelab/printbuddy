@@ -3502,6 +3502,7 @@ export interface PrinterMaintenanceOverview {
   printer_id: number;
   printer_name: string;
   printer_model: string | null;
+  printer_location?: string | null;
   total_print_hours: number;
   maintenance_items: MaintenanceStatus[];
   due_count: number;
@@ -4880,6 +4881,7 @@ export const api = {
     dateFrom?: string;
     dateTo?: string;
     search?: string;
+    location?: string;
   }): Promise<{ blob: Blob; filename: string }> => {
     const params = new URLSearchParams();
     if (options?.format) params.set('format', options.format);
@@ -4890,6 +4892,7 @@ export const api = {
     if (options?.dateFrom) params.set('date_from', options.dateFrom);
     if (options?.dateTo) params.set('date_to', options.dateTo);
     if (options?.search) params.set('search', options.search);
+    if (options?.location) params.set('location', options.location);
 
     const headers: Record<string, string> = {};
     if (authToken) {
@@ -5374,6 +5377,7 @@ export const api = {
   getPrintLog: (params?: {
     search?: string;
     printerId?: number;
+    location?: string;
     username?: string;
     status?: string;
     dateFrom?: string;
@@ -5384,6 +5388,7 @@ export const api = {
     const searchParams = new URLSearchParams();
     if (params?.search) searchParams.set('search', params.search);
     if (params?.printerId) searchParams.set('printer_id', String(params.printerId));
+    if (params?.location) searchParams.set('location', params.location);
     if (params?.username) searchParams.set('created_by_username', params.username);
     if (params?.status) searchParams.set('status', params.status);
     if (params?.dateFrom) searchParams.set('date_from', params.dateFrom);

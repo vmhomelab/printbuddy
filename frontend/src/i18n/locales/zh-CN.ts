@@ -6493,4 +6493,13 @@ export default {
       deleteConfirm: '删除原因“{{title}}”？如果已被报告过，则只会隐藏，以保留统计数据。',
     },
   },
+  locationFilter: {
+    lock: '在所有页面锁定位置',
+    unlock: '解锁位置',
+    selectToLock: '选择一个位置以锁定',
+    badge: '位置：{{location}}',
+    lockedHint: '已在打印机、归档和维护页面锁定。其他位置的打印机已隐藏。',
+    allLocations: '所有位置',
+    noPrintersAtLocation: '{{location}} 没有需要维护的打印机。',
+  },
 };

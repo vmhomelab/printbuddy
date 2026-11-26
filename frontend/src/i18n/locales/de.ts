@@ -6492,4 +6492,13 @@ export default {
       deleteConfirm: 'Grund „{{title}}" löschen? Wurde er schon gemeldet, wird er stattdessen nur ausgeblendet, damit die Statistik erhalten bleibt.',
     },
   },
+  locationFilter: {
+    lock: 'Standort auf allen Seiten fixieren',
+    unlock: 'Standort lösen',
+    selectToLock: 'Standort wählen, um ihn zu fixieren',
+    badge: 'Standort: {{location}}',
+    lockedHint: 'Fixiert für Drucker, Archiv und Wartung. Drucker anderer Standorte werden ausgeblendet.',
+    allLocations: 'Alle Standorte',
+    noPrintersAtLocation: 'Keine Drucker mit Wartung am Standort {{location}}.',
+  },
 };

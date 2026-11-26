@@ -2,7 +2,7 @@
  * Tests for the ArchivesPage component.
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { screen, waitFor, fireEvent } from '@testing-library/react';
 import { render } from '../utils';
 import { ArchivesPage } from '../../pages/ArchivesPage';
@@ -425,6 +425,58 @@ describe('ArchivesPage', () => {
         expect(screen.getByText('WasFailed')).toBeInTheDocument();
         expect(screen.getByText('WasCancelled')).toBeInTheDocument();
       });
+    });
+  });
+
+  describe('location filter', () => {
+    let store: Map<string, string>;
+
+    beforeEach(() => {
+      store = new Map();
+      vi.mocked(localStorage.getItem).mockImplementation((key: string) => store.get(key) ?? null);
+      vi.mocked(localStorage.setItem).mockImplementation((key: string, value: string) => { store.set(key, value); });
+      vi.mocked(localStorage.removeItem).mockImplementation((key: string) => { store.delete(key); });
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([
+          { id: 1, name: 'X1 Carbon', location: 'Site A' },
+          { id: 2, name: 'P1S', location: 'Site B' },
+        ])),
+        http.get('/api/v1/archives/', () => HttpResponse.json([
+          mockArchives[0],
+          { ...mockArchives[1], printer_id: 2, printer_name: 'P1S' },
+        ])),
+      );
+    });
+
+    afterEach(() => {
+      vi.mocked(localStorage.getItem).mockReset();
+      vi.mocked(localStorage.setItem).mockReset();
+      vi.mocked(localStorage.removeItem).mockReset();
+    });
+
+    it('hides archives of printers at other locations', async () => {
+      render(<ArchivesPage />);
+      await waitFor(() => expect(screen.getByText('Bracket v2')).toBeInTheDocument());
+
+      fireEvent.change(screen.getByLabelText('All Locations'), { target: { value: 'Site A' } });
+
+      expect(screen.getByText('Benchy')).toBeInTheDocument();
+      expect(screen.queryByText('Bracket v2')).not.toBeInTheDocument();
+    });
+
+    it('applies a locked location on load and can be unlocked from the badge', async () => {
+      store.set('locationFilterLocked', 'true');
+      store.set('locationFilter', 'Site B');
+      render(<ArchivesPage />);
+
+      await waitFor(() => expect(screen.getByTestId('location-lock-badge')).toHaveTextContent('Location: Site B'));
+      await waitFor(() => expect(screen.getByText('Bracket v2')).toBeInTheDocument());
+      expect(screen.queryByText('Benchy')).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getAllByRole('button', { name: 'Unlock location' })[0]);
+
+      expect(screen.queryByTestId('location-lock-badge')).not.toBeInTheDocument();
+      expect(store.has('locationFilterLocked')).toBe(false);
     });
   });
 });

@@ -1,4 +1,6 @@
 import { useState, useMemo } from 'react';
+import { LocationLockButton, LocationLockBadge } from '../components/LocationFilter';
+import { LOCATION_FILTER_ALL, useLocationFilter } from '../hooks/useLocationFilter';
 import { useTranslation } from 'react-i18next';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
@@ -1095,6 +1097,33 @@ export function MaintenancePage() {
     queryFn: api.getMaintenanceOverview,
   });
 
+  // Shared, lockable location filter (also used by Printers and Archives).
+  // Applied to the Status tab only — the Settings tab assigns maintenance
+  // types to printers and must keep showing every printer.
+  // Locations come from the full printer list, not the overview: the overview
+  // only contains active printers, and a location missing there would make the
+  // filter treat a locked location as gone and release the lock on every page.
+  const { data: printers } = useQuery({
+    queryKey: ['printers'],
+    queryFn: api.getPrinters,
+  });
+  const availableLocations = useMemo(
+    () => [...new Set((printers ?? []).map(p => p.location || '').filter(Boolean))].sort(),
+    [printers],
+  );
+  const {
+    location: locationFilter,
+    setLocation: setLocationFilter,
+    locked: locationLocked,
+    setLocked: setLocationLocked,
+    isActive: locationActive,
+    matches: matchesLocation,
+  } = useLocationFilter(printers ? availableLocations : undefined);
+  const statusOverview = useMemo(
+    () => (overview ?? []).filter(o => matchesLocation(o.printer_location)),
+    [overview, matchesLocation],
+  );
+
   const { data: types } = useQuery({
     queryKey: ['maintenanceTypes'],
     queryFn: api.getMaintenanceTypes,
@@ -1220,17 +1249,22 @@ export function MaintenancePage() {
     );
   }
 
-  const totalDue = overview?.reduce((sum, p) => sum + p.due_count, 0) || 0;
-  const totalWarning = overview?.reduce((sum, p) => sum + p.warning_count, 0) || 0;
+  const totalDue = statusOverview.reduce((sum, p) => sum + p.due_count, 0);
+  const totalWarning = statusOverview.reduce((sum, p) => sum + p.warning_count, 0);
 
   return (
     <div className="p-4 md:p-8">
       {/* Header */}
       <div className="mb-6">
-        <h1 className="text-2xl font-bold text-white flex items-center gap-3">
-          <Wrench className="w-7 h-7 text-bambu-green" />
-          {t('maintenance.title')}
-        </h1>
+        <div className="flex items-center gap-3 flex-wrap">
+          <h1 className="text-2xl font-bold text-white flex items-center gap-3">
+            <Wrench className="w-7 h-7 text-bambu-green" />
+            {t('maintenance.title')}
+          </h1>
+          {locationLocked && (
+            <LocationLockBadge location={locationFilter} onUnlock={() => setLocationLocked(false)} />
+          )}
+        </div>
         <p className="text-bambu-gray mt-1">
           {activeTab === 'status' ? (
             <>
@@ -1272,8 +1306,28 @@ export function MaintenancePage() {
       {/* Tab content */}
       {activeTab === 'status' ? (
         <div className="space-y-6">
-          {overview && overview.length > 0 ? (
-            [...overview].sort((a, b) => {
+          {availableLocations.length > 0 && (
+            <div className="flex items-center gap-1">
+              <select
+                className="h-8 px-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:outline-none"
+                value={locationFilter}
+                onChange={(e) => setLocationFilter(e.target.value)}
+                aria-label={t('locationFilter.allLocations')}
+              >
+                <option value={LOCATION_FILTER_ALL}>{t('locationFilter.allLocations')}</option>
+                {availableLocations.map((loc) => (
+                  <option key={loc} value={loc}>{loc}</option>
+                ))}
+              </select>
+              <LocationLockButton
+                locked={locationLocked}
+                canLock={locationActive}
+                onToggle={setLocationLocked}
+              />
+            </div>
+          )}
+          {statusOverview.length > 0 ? (
+            [...statusOverview].sort((a, b) => {
               // Sort printers with issues first
               const aScore = a.due_count * 10 + a.warning_count;
               const bScore = b.due_count * 10 + b.warning_count;
@@ -1290,6 +1344,12 @@ export function MaintenancePage() {
                 t={t}
               />
             ))
+          ) : locationActive ? (
+            <Card>
+              <CardContent className="text-center py-12">
+                <p className="text-bambu-gray">{t('locationFilter.noPrintersAtLocation', { location: locationFilter })}</p>
+              </CardContent>
+            </Card>
           ) : (
             <Card>
               <CardContent className="text-center py-16">

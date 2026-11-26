@@ -6495,4 +6495,13 @@ export default {
       deleteConfirm: 'Eliminare il motivo "{{title}}"? Se è già stato segnalato, viene solo nascosto per mantenere le statistiche.',
     },
   },
+  locationFilter: {
+    lock: 'Blocca la posizione su tutte le pagine',
+    unlock: 'Sblocca la posizione',
+    selectToLock: 'Seleziona una posizione per bloccarla',
+    badge: 'Posizione: {{location}}',
+    lockedHint: 'Bloccata su Stampanti, Archivi e Manutenzione. Le stampanti di altre posizioni sono nascoste.',
+    allLocations: 'Tutte le posizioni',
+    noPrintersAtLocation: 'Nessuna stampante con manutenzione in {{location}}.',
+  },
 };

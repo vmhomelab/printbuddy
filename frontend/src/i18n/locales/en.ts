@@ -6499,4 +6499,13 @@ export default {
       deleteConfirm: 'Delete reason "{{title}}"? If it has already been reported, it is only hidden instead, so the statistics stay intact.',
     },
   },
+  locationFilter: {
+    lock: 'Lock location on all pages',
+    unlock: 'Unlock location',
+    selectToLock: 'Select a location to lock it',
+    badge: 'Location: {{location}}',
+    lockedHint: 'Locked on Printers, Archives and Maintenance. Printers at other locations are hidden.',
+    allLocations: 'All Locations',
+    noPrintersAtLocation: 'No printers with maintenance at {{location}}.',
+  },
 };

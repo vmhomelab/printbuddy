@@ -122,6 +122,8 @@ import { SkipObjectsModal, SkipObjectsIcon } from '../components/SkipObjectsModa
 import { FileUploadModal } from '../components/FileUploadModal';
 import { PrintModal } from '../components/PrintModal';
 import { PrinterInfoModal } from '../components/PrinterInfoModal';
+import { LocationLockButton, LocationLockBadge } from '../components/LocationFilter';
+import { useLocationFilter } from '../hooks/useLocationFilter';
 import { AMS3H_UNIT_ID, RACK_EXTERNAL_MIN, externalSlotIndex, isAms3hUnit, isH3cModel, rackExternalLabel } from '../utils/trayIds';
 import { getGlobalTrayId, getFillBarColor, getSpoolmanFillLevel, getFallbackSpoolTag, getTrayFilamentSpoolId, isBambuLabSpool, resolveLoadedFilamentInfo, resolveTrayFillLevel } from '../utils/amsHelpers';
 import { ReportFailureModal } from '../components/ReportFailureModal';
@@ -8686,7 +8688,6 @@ export function PrintersPage() {
   const viewMode: ViewMode = cardSize === 1 ? 'compact' : 'expanded';
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
-  const [locationFilter, setLocationFilter] = useState<string>('all');
   const [statusCacheVersion, setStatusCacheVersion] = useState(0);
   const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>(() => {
     try {
@@ -9132,6 +9133,27 @@ export function PrintersPage() {
     return unsubscribe;
   }, [queryClient]);
 
+  // Derive unique locations for the location filter dropdown
+  const availableLocations = useMemo(() => {
+    if (!printers) return [];
+    return [...new Set(printers.map(p => p.location || '').filter(Boolean))].sort();
+  }, [printers]);
+
+  // Shared, lockable location filter (also used by Archives and Maintenance)
+  const {
+    location: locationFilter,
+    setLocation: setLocationFilter,
+    locked: locationLocked,
+    setLocked: setLocationLocked,
+    matches: matchesLocation,
+  } = useLocationFilter(printers ? availableLocations : undefined);
+
+  // Printers at the selected location (used by the status summary)
+  const locationPrinters = useMemo(
+    () => printers?.filter(p => matchesLocation(p.location)),
+    [printers, matchesLocation],
+  );
+
   // Filter printers by search term, status, and location
   const filteredPrinters = useMemo(() => {
     if (!printers) return [];
@@ -9174,12 +9196,6 @@ export function PrintersPage() {
     return result;
   // eslint-disable-next-line react-hooks/exhaustive-deps -- statusCacheVersion is intentional: it forces recompute when WebSocket updates printer status cache
   }, [printers, search, statusFilter, locationFilter, queryClient, statusCacheVersion]);
-
-  // Derive unique locations for the location filter dropdown
-  const availableLocations = useMemo(() => {
-    if (!printers) return [];
-    return [...new Set(printers.map(p => p.location || '').filter(Boolean))].sort();
-  }, [printers]);
 
   // Sort printers based on selected option
   const sortedPrinters = useMemo(() => {
@@ -9412,15 +9428,22 @@ export function PrintersPage() {
 
       {/* Location filter — only shown when at least one printer has a location */}
       {printers && printers.length > 0 && availableLocations.length > 0 && (
-        <ToolbarDropdown
-          value={locationFilter}
-          onChange={setLocationFilter}
-          fullWidth={inMenu}
-          options={[
-            { value: 'all', label: t('printers.filter.allLocations') },
-            ...availableLocations.map(loc => ({ value: loc, label: loc })),
-          ]}
-        />
+        <div className={`flex items-center gap-1 ${inMenu ? 'w-full' : ''}`}>
+          <ToolbarDropdown
+            value={locationFilter}
+            onChange={setLocationFilter}
+            fullWidth={inMenu}
+            options={[
+              { value: 'all', label: t('printers.filter.allLocations') },
+              ...availableLocations.map(loc => ({ value: loc, label: loc })),
+            ]}
+          />
+          <LocationLockButton
+            locked={locationLocked}
+            canLock={locationFilter !== 'all'}
+            onToggle={setLocationLocked}
+          />
+        </div>
       )}
 
       <button
@@ -9661,11 +9684,16 @@ export function PrintersPage() {
     <div className="p-4 md:p-8">
       <div className="space-y-3 mb-6">
         <div>
-          <h1 className="text-2xl font-bold text-white flex items-center gap-3">
-            <PrinterIcon className="w-7 h-7 text-bambu-green" />
-            {t('printers.title')}
-          </h1>
-          <StatusSummaryBar printers={printers} />
+          <div className="flex items-center gap-3 flex-wrap">
+            <h1 className="text-2xl font-bold text-white flex items-center gap-3">
+              <PrinterIcon className="w-7 h-7 text-bambu-green" />
+              {t('printers.title')}
+            </h1>
+            {locationLocked && (
+              <LocationLockBadge location={locationFilter} onUnlock={() => setLocationLocked(false)} />
+            )}
+          </div>
+          <StatusSummaryBar printers={locationPrinters} />
         </div>
         <div ref={toolbarRef} className="relative flex items-center gap-2">
           {/* Only show search bar when printers exist */}

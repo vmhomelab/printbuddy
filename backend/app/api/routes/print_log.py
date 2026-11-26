@@ -11,6 +11,7 @@ from backend.app.core.config import settings
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.print_log import PrintLogEntry
+from backend.app.models.printer import Printer
 from backend.app.models.user import User
 from backend.app.schemas.print_log import PrintLogEntrySchema, PrintLogResponse
 
@@ -23,6 +24,7 @@ router = APIRouter(prefix="/print-log", tags=["print-log"])
 async def get_print_log(
     search: str | None = None,
     printer_id: int | None = None,
+    location: str | None = None,
     created_by_username: str | None = None,
     status: str | None = None,
     date_from: datetime | None = None,
@@ -39,6 +41,11 @@ async def get_print_log(
     if printer_id is not None:
         query = query.where(PrintLogEntry.printer_id == printer_id)
         count_query = count_query.where(PrintLogEntry.printer_id == printer_id)
+    if location:
+        # Filter by the printer's *current* location (shared location filter).
+        location_printer_ids = select(Printer.id).where(Printer.location == location)
+        query = query.where(PrintLogEntry.printer_id.in_(location_printer_ids))
+        count_query = count_query.where(PrintLogEntry.printer_id.in_(location_printer_ids))
     if created_by_username:
         query = query.where(PrintLogEntry.created_by_username == created_by_username)
         count_query = count_query.where(PrintLogEntry.created_by_username == created_by_username)

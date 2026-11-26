@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from backend.app.models.archive import PrintArchive
+from backend.app.models.printer import Printer
 
 
 class ExportService:
@@ -80,6 +81,7 @@ class ExportService:
         date_from: datetime | None = None,
         date_to: datetime | None = None,
         search: str | None = None,
+        location: str | None = None,
     ) -> tuple[bytes, str, str]:
         """Export archives to CSV or Excel format.
 
@@ -92,6 +94,7 @@ class ExportService:
             date_from: Filter by start date
             date_to: Filter by end date
             search: Search filter
+            location: Filter by the printer's current location
 
         Returns:
             Tuple of (file_bytes, filename, content_type)
@@ -104,6 +107,8 @@ class ExportService:
         # Apply filters
         if printer_id:
             query = query.where(PrintArchive.printer_id == printer_id)
+        if location:
+            query = query.where(PrintArchive.printer_id.in_(select(Printer.id).where(Printer.location == location)))
         if project_id:
             query = query.where(PrintArchive.project_id == project_id)
         if status:

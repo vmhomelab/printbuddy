@@ -6507,4 +6507,13 @@ export default {
       deleteConfirm: '理由「{{title}}」を削除しますか？すでに報告されている場合は、統計を保つため非表示になるだけです。',
     },
   },
+  locationFilter: {
+    lock: 'すべてのページで場所を固定',
+    unlock: '場所の固定を解除',
+    selectToLock: '固定する場所を選択してください',
+    badge: '場所: {{location}}',
+    lockedHint: 'プリンター、アーカイブ、メンテナンスで固定中。他の場所のプリンターは非表示です。',
+    allLocations: 'すべての場所',
+    noPrintersAtLocation: '{{location}} にメンテナンス対象のプリンターはありません。',
+  },
 };
