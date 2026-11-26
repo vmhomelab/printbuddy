@@ -40,3 +40,37 @@ def test_already_normalized_serial_unchanged():
 def test_blank_serial_number_rejected():
     with pytest.raises(ValidationError):
         _make("   ")
+
+
+class TestRetargetApiUrlHost:
+    def test_swaps_host_and_keeps_port(self):
+        from backend.app.schemas.printer import retarget_api_url_host
+
+        assert (
+            retarget_api_url_host("http://192.168.1.20:7125", "192.168.1.20", "192.168.14.20")
+            == "http://192.168.14.20:7125"
+        )
+
+    def test_keeps_scheme_path_and_credentials(self):
+        from backend.app.schemas.printer import retarget_api_url_host
+
+        assert (
+            retarget_api_url_host("https://u:p@Printer.local:8443/api/", "printer.local", "u1.lan")
+            == "https://u:p@u1.lan:8443/api/"
+        )
+
+    def test_url_without_port(self):
+        from backend.app.schemas.printer import retarget_api_url_host
+
+        assert retarget_api_url_host("http://10.0.0.5", "10.0.0.5", "10.0.1.5") == "http://10.0.1.5"
+
+    def test_custom_host_is_left_alone(self):
+        from backend.app.schemas.printer import retarget_api_url_host
+
+        assert retarget_api_url_host("https://proxy.lan/moonraker", "10.0.0.5", "10.0.1.5") is None
+
+    def test_empty_inputs(self):
+        from backend.app.schemas.printer import retarget_api_url_host
+
+        assert retarget_api_url_host(None, "10.0.0.5", "10.0.1.5") is None
+        assert retarget_api_url_host("http://10.0.0.5:7125", "", "10.0.1.5") is None

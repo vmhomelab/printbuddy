@@ -66,6 +66,32 @@ def host_from_url(value: object) -> str | None:
     return urlparse(url).hostname if url else None
 
 
+def retarget_api_url_host(api_url: object, old_host: object, new_host: object) -> str | None:
+    """Swap the host of an ``api_url`` that was derived from the old IP/hostname.
+
+    Klipper/Moonraker and PrusaLink printers store a base URL built from the
+    IP at creation time (e.g. ``http://192.168.1.20:7125``). When the user only
+    edits the IP/hostname, that URL must follow, otherwise the client keeps
+    connecting to the old address. Scheme, port, credentials and path are
+    preserved. Returns ``None`` when the URL does not point at ``old_host``
+    (a deliberately custom URL, e.g. a reverse proxy), which is left alone.
+    """
+    url = str(api_url or "").strip()
+    old = str(old_host or "").strip().lower()
+    new = str(new_host or "").strip()
+    if not url or not old or not new:
+        return None
+    parsed = urlparse(url if "://" in url else f"http://{url}")
+    if (parsed.hostname or "").lower() != old:
+        return None
+    host = f"[{new}]" if ":" in new else new
+    netloc = host if parsed.port is None else f"{host}:{parsed.port}"
+    if parsed.username is not None:
+        userinfo = parsed.username + (f":{parsed.password}" if parsed.password is not None else "")
+        netloc = f"{userinfo}@{netloc}"
+    return parsed._replace(netloc=netloc).geturl()
+
+
 def infer_external_camera_type(camera_url: str) -> str:
     lower_url = camera_url.lower()
     if lower_url.startswith(("rtsp://", "rtsps://")):

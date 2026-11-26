@@ -406,6 +406,53 @@ class TestPrintersAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_update_klipper_ip_moves_derived_api_url(
+        self, async_client: AsyncClient, printer_factory, monkeypatch
+    ):
+        """Changing a Klipper printer's IP must update the derived api_url too."""
+        printer = await printer_factory(
+            name="U1",
+            provider="klipper",
+            ip_address="192.168.1.20",
+            api_url="http://192.168.1.20:7125",
+        )
+        disconnect = MagicMock()
+        connect = AsyncMock(return_value=True)
+        monkeypatch.setattr("backend.app.api.routes.printers.printer_manager.disconnect_printer", disconnect)
+        monkeypatch.setattr("backend.app.api.routes.printers.printer_manager.connect_printer", connect)
+
+        response = await async_client.patch(f"/api/v1/printers/{printer.id}", json={"ip_address": "192.168.14.20"})
+
+        assert response.status_code == 200, response.text
+        assert response.json()["ip_address"] == "192.168.14.20"
+        assert response.json()["api_url"] == "http://192.168.14.20:7125"
+        connected_printer = connect.await_args.args[0]
+        assert connected_printer.api_url == "http://192.168.14.20:7125"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_update_klipper_ip_keeps_custom_api_url(
+        self, async_client: AsyncClient, printer_factory, monkeypatch
+    ):
+        """A custom api_url pointing elsewhere (e.g. a reverse proxy) is left untouched."""
+        printer = await printer_factory(
+            name="U1",
+            provider="klipper",
+            ip_address="192.168.1.20",
+            api_url="https://klipper.example.lan/moonraker",
+        )
+        monkeypatch.setattr("backend.app.api.routes.printers.printer_manager.disconnect_printer", MagicMock())
+        monkeypatch.setattr(
+            "backend.app.api.routes.printers.printer_manager.connect_printer", AsyncMock(return_value=True)
+        )
+
+        response = await async_client.patch(f"/api/v1/printers/{printer.id}", json={"ip_address": "192.168.14.20"})
+
+        assert response.status_code == 200, response.text
+        assert response.json()["api_url"] == "https://klipper.example.lan/moonraker"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_update_printer_active_status(self, async_client: AsyncClient, printer_factory, db_session):
         """Verify printer active status can be updated."""
         printer = await printer_factory(is_active=True)

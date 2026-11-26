@@ -40,6 +40,7 @@ from backend.app.schemas.printer import (
     host_from_url,
     normalize_external_camera_update,
     normalize_octoprint_url,
+    retarget_api_url_host,
 )
 from backend.app.services import direct_print_tracking
 from backend.app.services.bambu_ftp import (
@@ -619,6 +620,15 @@ async def update_printer(
         # de-duplication and diagnostics) in sync with the URL's host.
         update_data["api_url"] = normalize_octoprint_url(update_data["api_url"])
         update_data.setdefault("ip_address", host_from_url(update_data["api_url"]))
+    elif (
+        "ip_address" in update_data and "api_url" not in update_data and update_data["ip_address"] != printer.ip_address
+    ):
+        # Klipper/PrusaLink derive api_url from the IP at creation time. The
+        # edit dialog only sends the new IP, so move the stored URL along with
+        # it — otherwise the printer keeps dialling the old address.
+        new_api_url = retarget_api_url_host(printer.api_url, printer.ip_address, update_data["ip_address"])
+        if new_api_url:
+            update_data["api_url"] = new_api_url
 
     # Handle nested ROI object - flatten to individual columns
     if "plate_detection_roi" in update_data:
