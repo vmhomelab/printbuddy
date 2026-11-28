@@ -144,9 +144,49 @@ async function openInSlicerWithToken(
   }
 }
 
+const MOONRAKER_PROVIDERS = new Set(['klipper', 'mainsail', 'fluidd']);
+
+/**
+ * Archives of Klipper prints started outside Printbuddy can be fileless when
+ * the automatic G-code copy failed. As long as the file is still on the
+ * printer it is fetched on demand before Reprint / Schedule opens.
+ */
+function useArchivePrintFile(archive: Archive, printerProvider: string | undefined, t: TFunction) {
+  const queryClient = useQueryClient();
+  const { showToast } = useToast();
+  const [fetching, setFetching] = useState(false);
+  const canFetch =
+    !archive.file_path &&
+    !!printerProvider &&
+    MOONRAKER_PROVIDERS.has(printerProvider) &&
+    /\.b?gcode$/i.test(archive.filename || '');
+  const hasPrintFile = !!archive.file_path || canFetch;
+
+  const withPrintFile = async (open: () => void) => {
+    if (archive.file_path || !canFetch) {
+      open();
+      return;
+    }
+    setFetching(true);
+    try {
+      await api.fetchArchivePrinterFile(archive.id);
+      await queryClient.invalidateQueries({ queryKey: ['archives'] });
+      showToast(t('archives.toast.printerFileFetched'), 'success');
+      open();
+    } catch (error) {
+      showToast((error as Error).message || t('archives.toast.printerFileFetchFailed'), 'error');
+    } finally {
+      setFetching(false);
+    }
+  };
+
+  return { hasPrintFile, canFetch, fetching, withPrintFile };
+}
+
 function ArchiveCard({
   archive,
   printerName,
+  printerProvider,
   isSelected,
   onSelect,
   selectionMode,
@@ -161,6 +201,7 @@ function ArchiveCard({
 }: {
   archive: Archive;
   printerName: string;
+  printerProvider?: string;
   isSelected: boolean;
   onSelect: (id: number) => void;
   selectionMode: boolean;
@@ -198,6 +239,7 @@ function ArchiveCard({
   const [showPhotos, setShowPhotos] = useState(false);
   const [showProjectPage, setShowProjectPage] = useState(false);
   const [showSchedule, setShowSchedule] = useState(false);
+  const printFile = useArchivePrintFile(archive, printerProvider, t);
   const [showDeleteSource3mfConfirm, setShowDeleteSource3mfConfirm] = useState(false);
   const [showDeleteF3dConfirm, setShowDeleteF3dConfirm] = useState(false);
   const [showDeleteTimelapseConfirm, setShowDeleteTimelapseConfirm] = useState(false);
@@ -399,16 +441,16 @@ function ArchiveCard({
       {
         label: t('archives.menu.print'),
         icon: <Printer className="w-4 h-4" />,
-        onClick: () => setShowReprint(true),
-        disabled: !archive.file_path || !canModify('archives', 'reprint', archive.created_by_id),
-        title: !archive.file_path ? t('archives.card.noFileForReprint') : !canModify('archives', 'reprint', archive.created_by_id) ? t('archives.permission.noReprint') : undefined,
+        onClick: () => { void printFile.withPrintFile(() => setShowReprint(true)); },
+        disabled: !printFile.hasPrintFile || printFile.fetching || !canModify('archives', 'reprint', archive.created_by_id),
+        title: !printFile.hasPrintFile ? t('archives.card.noFileForReprint') : !canModify('archives', 'reprint', archive.created_by_id) ? t('archives.permission.noReprint') : undefined,
       },
       {
         label: t('archives.menu.schedule'),
         icon: <Calendar className="w-4 h-4" />,
-        onClick: () => setShowSchedule(true),
-        disabled: !archive.file_path || !hasPermission('queue:create'),
-        title: !archive.file_path ? t('archives.card.noFileForReprint') : !hasPermission('queue:create') ? t('archives.permission.noAddToQueue') : undefined,
+        onClick: () => { void printFile.withPrintFile(() => setShowSchedule(true)); },
+        disabled: !printFile.hasPrintFile || printFile.fetching || !hasPermission('queue:create'),
+        title: !printFile.hasPrintFile ? t('archives.card.noFileForReprint') : !hasPermission('queue:create') ? t('archives.permission.noAddToQueue') : undefined,
       },
       {
         label: t('archives.menu.openInBambuStudio'),
@@ -1136,9 +1178,9 @@ function ArchiveCard({
                 variant="primary"
                 size="sm"
                 className="flex-1 min-w-0 overflow-hidden"
-                onClick={() => setShowReprint(true)}
-                disabled={!archive.file_path || !canModify('archives', 'reprint', archive.created_by_id)}
-                title={!archive.file_path ? t('archives.card.noFileForReprint') : !canModify('archives', 'reprint', archive.created_by_id) ? t('archives.card.noPermissionReprint') : undefined}
+                onClick={() => { void printFile.withPrintFile(() => setShowReprint(true)); }}
+                disabled={!printFile.hasPrintFile || printFile.fetching || !canModify('archives', 'reprint', archive.created_by_id)}
+                title={!printFile.hasPrintFile ? t('archives.card.noFileForReprint') : !canModify('archives', 'reprint', archive.created_by_id) ? t('archives.card.noPermissionReprint') : printFile.canFetch ? t('archives.card.fetchFromPrinter') : undefined}
               >
                 <Printer className="w-3 h-3 flex-shrink-0" />
                 <span className="hidden xl:inline truncate">{t('archives.card.reprint')}</span>
@@ -1147,9 +1189,9 @@ function ArchiveCard({
                 variant="secondary"
                 size="sm"
                 className="flex-1 min-w-0 overflow-hidden"
-                onClick={() => setShowSchedule(true)}
-                disabled={!archive.file_path || !hasPermission('queue:create')}
-                title={!archive.file_path ? t('archives.card.noFileForReprint') : !hasPermission('queue:create') ? t('archives.permission.noAddToQueue') : t('archives.card.schedulePrint')}
+                onClick={() => { void printFile.withPrintFile(() => setShowSchedule(true)); }}
+                disabled={!printFile.hasPrintFile || printFile.fetching || !hasPermission('queue:create')}
+                title={!printFile.hasPrintFile ? t('archives.card.noFileForReprint') : !hasPermission('queue:create') ? t('archives.permission.noAddToQueue') : t('archives.card.schedulePrint')}
               >
                 <Calendar className="w-3 h-3 flex-shrink-0" />
                 <span className="hidden xl:inline truncate">{t('archives.card.schedule')}</span>
@@ -1535,6 +1577,7 @@ function ArchiveCard({
 function ArchiveListRow({
   archive,
   printerName,
+  printerProvider,
   isSelected,
   onSelect,
   selectionMode,
@@ -1547,6 +1590,7 @@ function ArchiveListRow({
 }: {
   archive: Archive;
   printerName: string;
+  printerProvider?: string;
   isSelected: boolean;
   onSelect: (id: number) => void;
   selectionMode: boolean;
@@ -1570,6 +1614,7 @@ function ArchiveListRow({
   const [showReprint, setShowReprint] = useState(false);
   const [showSliceModal, setShowSliceModal] = useState(false);
   const [showSchedule, setShowSchedule] = useState(false);
+  const printFile = useArchivePrintFile(archive, printerProvider, t);
   const [showTimelapse, setShowTimelapse] = useState(false);
   const [showTimelapseSelect, setShowTimelapseSelect] = useState(false);
   const [availableTimelapses, setAvailableTimelapses] = useState<Array<{ name: string; path: string; size: number; mtime: string | null }>>([]);
@@ -1752,16 +1797,16 @@ function ArchiveListRow({
       {
         label: t('archives.menu.print'),
         icon: <Printer className="w-4 h-4" />,
-        onClick: () => setShowReprint(true),
-        disabled: !archive.file_path || !canModify('archives', 'reprint', archive.created_by_id),
-        title: !archive.file_path ? t('archives.card.noFileForReprint') : !canModify('archives', 'reprint', archive.created_by_id) ? t('archives.permission.noReprint') : undefined,
+        onClick: () => { void printFile.withPrintFile(() => setShowReprint(true)); },
+        disabled: !printFile.hasPrintFile || printFile.fetching || !canModify('archives', 'reprint', archive.created_by_id),
+        title: !printFile.hasPrintFile ? t('archives.card.noFileForReprint') : !canModify('archives', 'reprint', archive.created_by_id) ? t('archives.permission.noReprint') : undefined,
       },
       {
         label: t('archives.menu.schedule'),
         icon: <Calendar className="w-4 h-4" />,
-        onClick: () => setShowSchedule(true),
-        disabled: !archive.file_path || !hasPermission('queue:create'),
-        title: !archive.file_path ? t('archives.card.noFileForReprint') : !hasPermission('queue:create') ? t('archives.permission.noAddToQueue') : undefined,
+        onClick: () => { void printFile.withPrintFile(() => setShowSchedule(true)); },
+        disabled: !printFile.hasPrintFile || printFile.fetching || !hasPermission('queue:create'),
+        title: !printFile.hasPrintFile ? t('archives.card.noFileForReprint') : !hasPermission('queue:create') ? t('archives.permission.noAddToQueue') : undefined,
       },
       {
         label: t('archives.menu.openInBambuStudio'),
@@ -2149,9 +2194,9 @@ function ArchiveListRow({
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => setShowReprint(true)}
-              disabled={!canModify('archives', 'reprint', archive.created_by_id)}
-              title={!canModify('archives', 'reprint', archive.created_by_id) ? t('archives.card.noPermissionReprint') : t('archives.card.reprint')}
+              onClick={() => { void printFile.withPrintFile(() => setShowReprint(true)); }}
+              disabled={!printFile.hasPrintFile || printFile.fetching || !canModify('archives', 'reprint', archive.created_by_id)}
+              title={!printFile.hasPrintFile ? t('archives.card.noFileForReprint') : !canModify('archives', 'reprint', archive.created_by_id) ? t('archives.card.noPermissionReprint') : t('archives.card.reprint')}
               className="text-bambu-green hover:text-bambu-green-light hover:bg-bambu-green/10"
             >
               <Play className="w-4 h-4" />
@@ -2862,6 +2907,7 @@ export function ArchivesPage() {
   }, [logPageSize]);
 
   const printerMap = new Map(printers?.map((p) => [p.id, p.name]) || []);
+  const printerProviderMap = new Map(printers?.map((p) => [p.id, p.provider]) || []);
 
   // Extract unique materials and colors from archives
   const uniqueMaterials = [...new Set(
@@ -3636,6 +3682,7 @@ export function ArchivesPage() {
                 key={archive.id}
                 archive={archive}
                 printerName={archive.printer_id ? printerMap.get(archive.printer_id) || 'Unknown' : (archive.sliced_for_model || 'No Printer')}
+                printerProvider={archive.printer_id ? printerProviderMap.get(archive.printer_id) : undefined}
                 isSelected={selectedIds.has(archive.id)}
                 onSelect={toggleSelect}
                 selectionMode={selectionMode}
@@ -3679,6 +3726,7 @@ export function ArchivesPage() {
                   key={archive.id}
                   archive={archive}
                   printerName={archive.printer_id ? printerMap.get(archive.printer_id) || 'Unknown' : (archive.sliced_for_model || 'No Printer')}
+                  printerProvider={archive.printer_id ? printerProviderMap.get(archive.printer_id) : undefined}
                   isSelected={selectedIds.has(archive.id)}
                   onSelect={toggleSelect}
                   selectionMode={selectionMode}

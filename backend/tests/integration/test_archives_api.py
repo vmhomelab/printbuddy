@@ -1157,3 +1157,52 @@ class TestArchiveF3DEndpoints:
         response = await async_client.delete("/api/v1/archives/tags/nonexistent-tag")
         assert response.status_code == 200
         assert response.json()["affected"] == 0
+
+
+class TestFetchPrinterFile:
+    """POST /archives/{id}/fetch-printer-file — fetch a fileless Klipper archive's G-code."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_refused_for_non_klipper_printers(self, async_client: AsyncClient, archive_factory, printer_factory):
+        printer = await printer_factory()
+        archive = await archive_factory(printer.id, filename="part.gcode", file_path="", file_size=0)
+
+        response = await async_client.post(f"/api/v1/archives/{archive.id}/fetch-printer-file")
+        assert response.status_code == 409
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_fetches_the_file_for_a_klipper_archive(
+        self, async_client: AsyncClient, archive_factory, printer_factory, monkeypatch
+    ):
+        import backend.app.main as main
+        from backend.app.services.printer_manager import printer_manager
+
+        printer = await printer_factory(provider="klipper", serial_number="KLIPPERTEST0001")
+        archive = await archive_factory(printer.id, filename="sub/part.gcode", file_path="", file_size=0)
+        monkeypatch.setattr(printer_manager, "is_connected", lambda printer_id: True)
+        calls = []
+
+        async def fake_fetch(printer_id, archive_id, remote_filename, logger, *, on_demand=False):
+            calls.append((printer_id, archive_id, remote_filename, on_demand))
+            return False, "not_on_printer"
+
+        monkeypatch.setattr(main, "fetch_moonraker_gcode_into_archive", fake_fetch)
+
+        response = await async_client.post(f"/api/v1/archives/{archive.id}/fetch-printer-file")
+        assert response.status_code == 404
+        assert "no longer on the printer" in response.json()["detail"]
+        assert calls == [(printer.id, archive.id, "sub/part.gcode", True)]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_noop_for_archives_that_already_have_a_file(
+        self, async_client: AsyncClient, archive_factory, printer_factory
+    ):
+        printer = await printer_factory()
+        archive = await archive_factory(printer.id)
+
+        response = await async_client.post(f"/api/v1/archives/{archive.id}/fetch-printer-file")
+        assert response.status_code == 200
+        assert response.json()["file_path"] == archive.file_path

@@ -232,3 +232,45 @@ async def test_metadata_refresh_still_fills_an_archive_with_copied_gcode(archive
     finally:
         main._refresh_file_metadata_for_archive = original
     assert calls, "metadata refresh was skipped for an archive with a copied G-code"
+
+
+@pytest.mark.asyncio
+async def test_on_demand_fetch_works_with_the_automatic_copy_turned_off(archive_env, monkeypatch):
+    """Reprint of a fileless archive fetches the file even if "Keep G-code" is 0."""
+    import logging
+
+    from backend.app.models.settings import Settings
+
+    main, session_maker, _ = archive_env
+    fake = _FakeClient(GCODE)
+    monkeypatch.setattr(main.printer_manager, "get_client", lambda printer_id: fake)
+    archive_id = await _fileless_archive(session_maker)
+    async with session_maker() as db:
+        db.add(Settings(key="moonraker_archive_gcode_max_mb", value="0"))
+        await db.commit()
+
+    copied, reason = await main.fetch_moonraker_gcode_into_archive(
+        1, archive_id, None, logging.getLogger("t"), on_demand=True
+    )
+
+    assert (copied, reason) == (True, "copied")
+    # Without an explicit name the archive's own (remote) filename is used.
+    assert fake.calls == [("parts/benchy.gcode", 200 * 1024 * 1024)]
+    assert (await _load(session_maker, archive_id)).file_size == len(GCODE)
+
+
+@pytest.mark.asyncio
+async def test_fetch_reports_why_nothing_was_copied(archive_env, monkeypatch):
+    import logging
+
+    main, session_maker, _ = archive_env
+    log = logging.getLogger("t")
+    archive_id = await _fileless_archive(session_maker)
+
+    monkeypatch.setattr(main.printer_manager, "get_client", lambda printer_id: _FakeClient(None))
+    assert await main.fetch_moonraker_gcode_into_archive(1, archive_id, None, log) == (False, "not_on_printer")
+
+    monkeypatch.setattr(main.printer_manager, "get_client", lambda printer_id: None)
+    assert await main.fetch_moonraker_gcode_into_archive(1, archive_id, None, log) == (False, "not_connected")
+
+    assert await main.fetch_moonraker_gcode_into_archive(1, archive_id + 999, None, log) == (False, "no_archive")

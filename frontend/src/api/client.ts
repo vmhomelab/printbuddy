@@ -5306,6 +5306,8 @@ export const api = {
       }>;
     }>(`/archives/${archiveId}/filament-requirements${qs.toString() ? `?${qs}` : ''}`);
   },
+  fetchArchivePrinterFile: (archiveId: number) =>
+    request<Archive>(`/archives/${archiveId}/fetch-printer-file`, { method: 'POST' }),
   reprintArchive: (
     archiveId: number,
     printerId: number,

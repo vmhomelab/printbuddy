@@ -1125,15 +1125,30 @@ async def _moonraker_archive_gcode_limit_bytes() -> int:
     return max(limit_mb, 0) * 1024 * 1024
 
 
-async def _attach_moonraker_gcode(printer_id: int, archive_id: int, remote_filename: str, logger) -> bool:
-    """Copy the G-code of a print started outside Printbuddy into its archive.
+async def fetch_moonraker_gcode_into_archive(
+    printer_id: int,
+    archive_id: int,
+    remote_filename: str | None,
+    logger,
+    *,
+    on_demand: bool = False,
+) -> tuple[bool, str]:
+    """Copy a Klipper print's G-code from Moonraker into its fileless archive.
 
-    Prints started from Fluidd, Mainsail or a slicer upload only get a
-    fileless archive, so they could not be reprinted. The file is streamed
-    from Moonraker into the archive's own folder (the same folder that holds
-    its thumbnail and photos), and ``file_path`` is set so Reprint and
-    Add to queue work. Best-effort: a missing file, a file over the size
-    limit or a network error leaves the archive fileless, as before.
+    Prints started from Fluidd, Mainsail, a printer touchscreen or a slicer
+    upload only get a fileless archive, so they could not be reprinted. The
+    file is streamed from Moonraker into the archive's own folder (the same
+    folder that holds its thumbnail and photos), and ``file_path`` is set so
+    Reprint and Add to queue work.
+
+    Runs automatically at print start and again at print end, and
+    ``on_demand`` when a user reprints a fileless archive (then the
+    "Keep G-code" setting being off does not block the copy; the default
+    size limit still applies).
+
+    Returns ``(copied, reason)``; ``reason`` is one of ``copied``,
+    ``has_file``, ``disabled``, ``no_archive``, ``not_gcode``,
+    ``not_connected``, ``unsupported``, ``not_on_printer`` or ``error``.
     """
     from pathlib import Path
 
@@ -1143,47 +1158,76 @@ async def _attach_moonraker_gcode(printer_id: int, archive_id: int, remote_filen
     try:
         limit = await _moonraker_archive_gcode_limit_bytes()
         if limit <= 0:
-            return False
-        client = printer_manager.get_client(printer_id)
-        download = getattr(client, "download_file_to", None)
-        if not callable(download):
-            return False
+            if not on_demand:
+                return False, "disabled"
+            limit = MOONRAKER_ARCHIVE_GCODE_DEFAULT_MB * 1024 * 1024
 
         async with async_session() as db:
             archive = await db.get(PrintArchive, archive_id)
-            if archive is None or archive.file_path:
-                return False
-            name = Path(str(remote_filename).replace("\\", "/")).name
-            if not name.lower().endswith((".gcode", ".bgcode")):
-                return False
-            dest = resolve_archive_dir(archive) / name
-            size = await asyncio.to_thread(download, str(remote_filename), dest, max_bytes=limit)
-            if not size:
-                logger.info(
-                    "[MOONRAKER] G-code %s not copied into archive %s (not on the printer or over %s MB)",
-                    remote_filename,
-                    archive_id,
-                    limit // (1024 * 1024),
-                )
-                return False
-
-            # The archive may have been deleted or changed during the download.
-            await db.refresh(archive)
+            if archive is None:
+                return False, "no_archive"
             if archive.file_path:
+                return False, "has_file"
+            remote = str(remote_filename or archive.filename or "").replace("\\", "/").strip().lstrip("/")
+            name = Path(remote).name
+            if not name.lower().endswith((".gcode", ".bgcode")):
+                logger.info("[MOONRAKER] Not copying %r into archive %s: not a G-code file", remote, archive_id)
+                return False, "not_gcode"
+            client = printer_manager.get_client(printer_id)
+            if client is None:
+                logger.warning(
+                    "[MOONRAKER] Cannot copy %s into archive %s: printer %s has no client",
+                    remote,
+                    archive_id,
+                    printer_id,
+                )
+                return False, "not_connected"
+            download = getattr(client, "download_file_to", None)
+            if not callable(download):
+                return False, "unsupported"
+            dest = resolve_archive_dir(archive) / name
+            # End the read transaction before the (possibly long) download so
+            # the session does not hold a stale SQLite snapshot meanwhile.
+            await db.commit()
+
+        size = await asyncio.to_thread(download, remote, dest, max_bytes=limit)
+        if not size:
+            logger.warning(
+                "[MOONRAKER] G-code %s not copied into archive %s (not on printer %s or over %s MB)",
+                remote,
+                archive_id,
+                printer_id,
+                limit // (1024 * 1024),
+            )
+            return False, "not_on_printer"
+
+        content_hash = await asyncio.to_thread(ArchiveService.compute_file_hash, dest)
+        async with async_session() as db:
+            # The archive may have been deleted or changed during the download.
+            archive = await db.get(PrintArchive, archive_id)
+            if archive is None or archive.file_path:
                 await asyncio.to_thread(dest.unlink, missing_ok=True)
-                return False
+                return False, "no_archive" if archive is None else "has_file"
             archive.file_path = str(dest.relative_to(app_settings.base_dir))
             archive.file_size = size
-            archive.content_hash = await asyncio.to_thread(ArchiveService.compute_file_hash, dest)
+            archive.content_hash = content_hash
             extra = dict(archive.extra_data or {})
             extra["gcode_source"] = "moonraker"
             archive.extra_data = extra
             await db.commit()
-        logger.info("[MOONRAKER] Copied %s into archive %s (%s bytes)", remote_filename, archive_id, size)
-        return True
+        logger.info("[MOONRAKER] Copied %s into archive %s (%s bytes)", remote, archive_id, size)
+        return True, "copied"
     except Exception as exc:  # noqa: BLE001 - optional copy; the archive stays fileless
-        logger.warning("[MOONRAKER] Could not copy %s into archive %s: %s", remote_filename, archive_id, exc)
-        return False
+        logger.warning(
+            "[MOONRAKER] Could not copy %s into archive %s: %s", remote_filename, archive_id, exc, exc_info=True
+        )
+        return False, "error"
+
+
+async def _attach_moonraker_gcode(printer_id: int, archive_id: int, remote_filename: str, logger) -> bool:
+    """Best-effort automatic copy (print start / print end); see fetch_moonraker_gcode_into_archive."""
+    copied, _reason = await fetch_moonraker_gcode_into_archive(printer_id, archive_id, remote_filename, logger)
+    return copied
 
 
 async def _apply_file_metadata_to_archive(db, printer_id: int, printer, archive, data: dict, logger) -> bool:
@@ -4482,6 +4526,13 @@ async def on_print_complete(printer_id: int, data: dict):
                     updated = await _apply_file_metadata_to_archive(db, printer_id, printer, archive, data, logger)
                     if updated:
                         await db.commit()
+                    # The copy at print start may have failed (printer busy,
+                    # network hiccup, backend restarted mid-print): try once
+                    # more while the file is surely still on the printer.
+                    if printer.provider in {"klipper", "mainsail", "fluidd"} and not archive.file_path:
+                        asyncio.create_task(
+                            _attach_moonraker_gcode(printer_id, archive.id, archive.filename or filename, logger)
+                        )
         except Exception as e:
             logger.debug("[FILE-META] Late archive metadata enrichment failed for printer %s: %s", printer_id, e)
 

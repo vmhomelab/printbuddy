@@ -3629,6 +3629,77 @@ async def slice_archive(
     }
 
 
+_FETCH_PRINTER_FILE_ERRORS = {
+    "not_gcode": (409, "This archive's file is not a G-code file, so it cannot be fetched from the printer."),
+    "unsupported": (409, "Fetching the print file is only supported for Klipper/Moonraker printers."),
+    "not_connected": (400, "Printer is not connected"),
+    "not_on_printer": (
+        404,
+        "The G-code file is no longer on the printer (or is larger than the size limit), so it cannot be reprinted.",
+    ),
+    "error": (502, "Could not download the G-code file from the printer. See the Printbuddy log for details."),
+}
+
+
+@router.post("/{archive_id}/fetch-printer-file", response_model=ArchiveResponse)
+async def fetch_archive_file_from_printer(
+    archive_id: int,
+    db: AsyncSession = Depends(get_db),
+    auth_result: tuple[User | None, bool] = Depends(
+        require_ownership_permission(
+            Permission.ARCHIVES_REPRINT_ALL,
+            Permission.ARCHIVES_REPRINT_OWN,
+        )
+    ),
+):
+    """Copy a fileless Klipper archive's G-code from the printer into the archive.
+
+    Archives of prints started outside Printbuddy (Fluidd, Mainsail, the
+    printer's touchscreen, a slicer upload) are fileless when the automatic
+    copy failed. As long as the file is still on the printer, this fetches it
+    so the archive can be reprinted or queued.
+    """
+    from backend.app.main import fetch_moonraker_gcode_into_archive
+    from backend.app.models.printer import Printer
+
+    user, can_modify_all = auth_result
+
+    archive = await db.get(PrintArchive, archive_id)
+    if not archive:
+        raise HTTPException(404, "Archive not found")
+    if not can_modify_all and user and archive.created_by_id != user.id:
+        raise HTTPException(403, "You can only reprint your own archives")
+
+    if not archive.file_path:
+        printer = await db.get(Printer, archive.printer_id) if archive.printer_id else None
+        if not printer or (printer.provider or "").lower() not in {"klipper", "mainsail", "fluidd"}:
+            raise HTTPException(*_FETCH_PRINTER_FILE_ERRORS["unsupported"])
+        from backend.app.services.printer_manager import printer_manager
+
+        if not printer_manager.is_connected(printer.id):
+            raise HTTPException(*_FETCH_PRINTER_FILE_ERRORS["not_connected"])
+        printer_id = printer.id
+        remote_filename = archive.filename
+        # Release this request's read transaction before the download.
+        await db.commit()
+
+        copied, reason = await fetch_moonraker_gcode_into_archive(
+            printer_id, archive_id, remote_filename, logger, on_demand=True
+        )
+        if not copied and reason not in {"has_file"}:
+            if reason == "no_archive":
+                raise HTTPException(404, "Archive not found")
+            status, detail = _FETCH_PRINTER_FILE_ERRORS.get(reason, _FETCH_PRINTER_FILE_ERRORS["error"])
+            raise HTTPException(status, detail)
+
+    db.expire_all()
+    service = ArchiveService(db)
+    archive = await service.get_archive(archive_id)
+    if not archive:
+        raise HTTPException(404, "Archive not found")
+    return archive_to_response(archive)
+
+
 @router.post("/{archive_id}/reprint")
 async def reprint_archive(
     archive_id: int,
